@@ -8,8 +8,8 @@
 // DKIM key and signs before this transport ever sees the bytes.
 
 import { connect as netConnect, type Socket } from 'node:net';
-import { connect as tlsConnect, type ConnectionOptions } from 'node:tls';
 import { hostname } from 'node:os';
+import { type ConnectionOptions, connect as tlsConnect } from 'node:tls';
 import { MailError } from '../errors.ts';
 import type { MailTransport, OutboundEnvelope, TransportResult } from '../types.ts';
 
@@ -86,12 +86,13 @@ class Conn {
     const lines = this.buffer.split('\r\n');
     const complete: string[] = [];
     for (let i = 0; i < lines.length - 1; i += 1) {
-      complete.push(lines[i]!);
-      if (/^\d{3}(?: |$)/.test(lines[i]!)) {
+      const line = lines[i] ?? '';
+      complete.push(line);
+      if (/^\d{3}(?: |$)/.test(line)) {
         this.buffer = lines.slice(i + 1).join('\r\n');
         const w = this.waiting;
         this.waiting = null;
-        w.resolve({ code: Number(complete[complete.length - 1]!.slice(0, 3)), lines: complete.map((l) => l.slice(4)) });
+        w.resolve({ code: Number(line.slice(0, 3)), lines: complete.map((l) => l.slice(4)) });
         return;
       }
     }
@@ -146,7 +147,7 @@ export function dotStuff(raw: Uint8Array): string {
 /** `250 2.0.0 OK queued as ABC123` → `ABC123`, else null. */
 export function queuedId(reply: Reply): string | null {
   const last = reply.lines[reply.lines.length - 1] ?? '';
-  const m = /(?:queued as|id=|Message accepted for delivery|Queued mail for delivery)\s*[:\-]?\s*([\w.@<>+-]+)?/i.exec(
+  const m = /(?:queued as|id=|Message accepted for delivery|Queued mail for delivery)\s*[:-]?\s*([\w.@<>+-]+)?/i.exec(
     last,
   );
   return m?.[1] ?? null;
@@ -189,7 +190,7 @@ export function smtpTransport(opts: SmtpTransportOptions): MailTransport {
     const reply = expect(await conn.command(`EHLO ${ehloName}`), [250], 'EHLO');
     const lines = reply.lines.slice(1);
     return {
-      ext: new Set(lines.map((l) => l.split(' ')[0]!.toUpperCase())),
+      ext: new Set(lines.map((l) => (l.split(' ')[0] ?? '').toUpperCase())),
       auth: lines.find((l) => l.toUpperCase().startsWith('AUTH')) ?? '',
     };
   };

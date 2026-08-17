@@ -210,6 +210,7 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
          VALUES ($1, $2, $3, $4) RETURNING id, tenant_id, url, secret, events, enabled, created_at`,
         [tenantId, url.toString(), secret, events],
       );
+      // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING always yields one row
       return { ...toSubscription(rows[0]!), secret };
     },
 
@@ -273,7 +274,7 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
           if (!row) return;
           const body = JSON.stringify(row.payload);
           const attempt = row.attempts + 1;
-          const result = await post(fetch, row.url!, row.secret!, row.id, body, now, timeoutMs);
+          const result = await post(fetch, row.url ?? '', row.secret ?? '', row.id, body, now, timeoutMs);
           if (result.ok) {
             await tx.query(
               `UPDATE mail.webhook_deliveries
@@ -296,7 +297,7 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
             opts.logger?.warn('webhook delivery failed permanently', { id: row.id, url: row.url, attempts: attempt });
             return;
           }
-          const delay = RETRY_SCHEDULE_S[Math.min(attempt - 1, RETRY_SCHEDULE_S.length - 1)]!;
+          const delay = RETRY_SCHEDULE_S[Math.min(attempt - 1, RETRY_SCHEDULE_S.length - 1)] ?? 0;
           await tx.query(
             `UPDATE mail.webhook_deliveries
                 SET attempts = $2, last_status_code = $3, last_error = $4, next_attempt_at = $5

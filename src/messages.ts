@@ -9,12 +9,12 @@
 // the window). Idempotency keys exist so the caller's retry does not become a
 // second message.
 
-import { parseAddress, parseAddressList, type ParsedAddress } from './address.ts';
+import { type ParsedAddress, parseAddress, parseAddressList } from './address.ts';
 import { sha256Hex } from './crypto.ts';
 import { dkimSign } from './dkim.ts';
 import type { DomainsApi } from './domains.ts';
 import { MailError } from './errors.ts';
-import { messageData, type EventsApi } from './events.ts';
+import { type EventsApi, messageData } from './events.ts';
 import { assertHeaderSafe, buildMime, newMessageId } from './mime.ts';
 import type { SuppressionApi } from './suppression.ts';
 import type {
@@ -27,8 +27,8 @@ import type {
   Message,
   MessageStatus,
   SendInput,
-  SendOptions,
   SendingDomain,
+  SendOptions,
   SqlExecutor,
   TenantId,
 } from './types.ts';
@@ -307,7 +307,7 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       const retryable = MailError.hasCode(error, 'transport') && error.failure.retryable;
       const detail = error instanceof Error ? error.message : String(error);
       if (retryable && attemptNo < maxAttempts) {
-        const delay = SEND_RETRY_SCHEDULE_S[Math.min(attemptNo - 1, SEND_RETRY_SCHEDULE_S.length - 1)]!;
+        const delay = SEND_RETRY_SCHEDULE_S[Math.min(attemptNo - 1, SEND_RETRY_SCHEDULE_S.length - 1)] ?? 0;
         await db.query(
           `UPDATE mail.messages SET status = 'queued', attempts = $2, last_error = $3, next_attempt_at = $4 WHERE id = $1`,
           [row.id, attemptNo, detail, new Date(now.getTime() + delay * 1000)],
@@ -354,9 +354,9 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
         JSON.stringify({ payload: stored, tags, scheduledAt: input.scheduledAt?.toISOString() ?? null }),
       );
       const nothingLeft = to.length + cc.length + bcc.length === 0;
-      const scheduled = input.scheduledAt && input.scheduledAt.getTime() > now.getTime();
-      const status: MessageStatus = nothingLeft ? 'suppressed' : scheduled ? 'scheduled' : 'queued';
-      const nextAttempt = nothingLeft ? null : scheduled ? input.scheduledAt! : now;
+      const scheduledAt = input.scheduledAt && input.scheduledAt.getTime() > now.getTime() ? input.scheduledAt : null;
+      const status: MessageStatus = nothingLeft ? 'suppressed' : scheduledAt ? 'scheduled' : 'queued';
+      const nextAttempt = nothingLeft ? null : (scheduledAt ?? now);
 
       const inserted = await db.query<Row>(
         `INSERT INTO mail.messages
@@ -392,9 +392,10 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
           `SELECT ${COLUMNS} FROM mail.messages WHERE tenant_id = $1 AND idempotency_key = $2`,
           [tenantId, input.idempotencyKey],
         );
-        const prior = existing[0]!;
-        if (prior.content_hash !== contentHash)
-          throw new MailError({ code: 'idempotency_conflict', key: input.idempotencyKey! });
+        const prior = existing[0];
+        const key = input.idempotencyKey ?? '';
+        if (!prior) throw new MailError({ code: 'not_found', what: 'message', id: key });
+        if (prior.content_hash !== contentHash) throw new MailError({ code: 'idempotency_conflict', key });
         return toMessage(prior);
       }
 
@@ -407,7 +408,7 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
         );
         if (claimed[0]) {
           await attempt(claimed[0], now);
-          row = (await getRow(tenantId, row.id))!;
+          row = (await getRow(tenantId, row.id)) ?? row;
         }
       }
       return toMessage(row);

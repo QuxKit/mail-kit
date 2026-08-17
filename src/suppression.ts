@@ -63,6 +63,7 @@ export function createSuppression(opts: SuppressionOptions): SuppressionApi {
          RETURNING id, tenant_id, address, reason, detail, created_at`,
         [tenantId, address, input.reason, input.detail ?? null],
       );
+      // biome-ignore lint/style/noNonNullAssertion: INSERT … ON CONFLICT DO UPDATE … RETURNING always yields one row
       return toSuppression(rows[0]!);
     },
 

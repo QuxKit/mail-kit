@@ -15,11 +15,12 @@ import type {
   DnsRecord,
   DomainRegistration,
   Fetch,
+  FetchResponse,
   MailTransport,
   OutboundEnvelope,
   TransportResult,
 } from '../types.ts';
-import { signV4, type AwsCredentials } from './sigv4.ts';
+import { type AwsCredentials, signV4 } from './sigv4.ts';
 
 export interface SesTransportOptions {
   region: string;
@@ -61,7 +62,7 @@ export function sesTransport(opts: SesTransportOptions): MailTransport {
     });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let res;
+    let res: FetchResponse;
     try {
       res = await opts.fetch(url, { method, headers, body: text || undefined, signal: controller.signal });
     } catch (error) {

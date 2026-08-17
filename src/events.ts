@@ -169,6 +169,7 @@ export function createEvents(opts: EventsOptions): EventsApi {
               JSON.stringify(detail),
             ],
           );
+          // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING always yields one row
           const row = rows[0]!;
           if (!message) {
             opts.logger?.warn('delivery event for unknown message', {

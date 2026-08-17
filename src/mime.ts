@@ -8,7 +8,7 @@
 // for line breaks before they are written.
 
 import { randomBytes } from 'node:crypto';
-import { encodeWord, renderAddress, type ParsedAddress } from './address.ts';
+import { encodeWord, type ParsedAddress, renderAddress } from './address.ts';
 import { MailError } from './errors.ts';
 import type { Attachment, ListUnsubscribe } from './types.ts';
 
@@ -87,12 +87,12 @@ export function quotedPrintable(text: string): string {
     line = '';
   };
   for (let i = 0; i < bytes.length; i += 1) {
-    const b = bytes[i]!;
+    const b = bytes[i] ?? 0;
     if (b === 0x0d && bytes[i + 1] === 0x0a) {
       // protect trailing whitespace on the line before a hard break
       if (line.endsWith(' ') || line.endsWith('\t')) {
-        const last = line.at(-1)!;
-        line = `${line.slice(0, -1)}=${last.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`;
+        const last = line.charCodeAt(line.length - 1);
+        line = `${line.slice(0, -1)}=${last.toString(16).toUpperCase().padStart(2, '0')}`;
       }
       flush(false);
       i += 1;
@@ -165,7 +165,7 @@ function attachmentPart(a: Attachment): string {
 
 function multipart(subtype: string, parts: string[]): string {
   const b = boundary();
-  const body = parts.map((p) => `--${b}${CRLF}${p}`).join(CRLF) + `${CRLF}--${b}--`;
+  const body = `${parts.map((p) => `--${b}${CRLF}${p}`).join(CRLF)}${CRLF}--${b}--`;
   return `Content-Type: multipart/${subtype}; boundary="${b}"${CRLF}${CRLF}${body}`;
 }
 
@@ -226,7 +226,9 @@ export function buildMime(input: MimeInput): Uint8Array {
   const plainPart = input.text ? textPart('text/plain', input.text) : null;
 
   if (plainPart && htmlPart) body = multipart('alternative', [plainPart, htmlPart]);
-  else body = (plainPart ?? htmlPart)!;
+  else if (plainPart) body = plainPart;
+  else if (htmlPart) body = htmlPart;
+  else throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
 
   if (attached.length) body = multipart('mixed', [body, ...attached.map(attachmentPart)]);
 

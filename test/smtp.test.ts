@@ -2,7 +2,7 @@
 // envelope, dot-stuffed DATA, partial recipient rejection, and error mapping.
 
 import assert from 'node:assert/strict';
-import { createServer, type AddressInfo, type Server, type Socket } from 'node:net';
+import { type AddressInfo, createServer, type Server, type Socket } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 
 import { MailError } from '../src/errors.ts';

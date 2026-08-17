@@ -9,9 +9,9 @@ import { after, before, describe, it } from 'node:test';
 import { dkimVerify } from '../src/dkim.ts';
 import { MailError } from '../src/errors.ts';
 import { createMail, type Mail } from '../src/instance.ts';
-import { memoryTransport, type MemoryTransport } from '../src/transports/memory.ts';
+import { type MemoryTransport, memoryTransport } from '../src/transports/memory.ts';
 import { verifyWebhookSignature } from '../src/webhooks.ts';
-import { FakeDns, FakeFetch, setupDatabase, SKIP_REASON, testDkimKey, type Harness } from './harness.ts';
+import { FakeDns, FakeFetch, type Harness, SKIP_REASON, setupDatabase, testDkimKey } from './harness.ts';
 
 const harness = await setupDatabase();
 after(async () => {

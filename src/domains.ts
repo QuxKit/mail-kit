@@ -185,6 +185,7 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
         WHERE id = $1 RETURNING ${COLUMNS}`,
       [domain.id, status, JSON.stringify(checks), now],
     );
+    // biome-ignore lint/style/noNonNullAssertion: UPDATE … RETURNING on a row we just read
     const updated = toDomain(rows[0]!);
     if (status !== domain.status) {
       const type = status === 'verified' ? 'domain.verified' : status === 'failed' ? 'domain.failed' : null;
@@ -209,7 +210,7 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
         throw new MailError({
           code: 'invalid_input',
           reason:
-            existing[0]!.tenant_id === tenantId
+            existing[0]?.tenant_id === tenantId
               ? `domain ${name} is already added`
               : `domain ${name} is claimed by another tenant`,
         });
@@ -271,6 +272,7 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
           JSON.stringify(records),
         ],
       );
+      // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING always yields one row
       return toDomain(rows[0]!);
     },
 

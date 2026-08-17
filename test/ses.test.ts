@@ -3,11 +3,11 @@
 // SNS signature verification.
 
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, createSign } from 'node:crypto';
+import { createSign, generateKeyPairSync } from 'node:crypto';
 import { describe, it } from 'node:test';
 
 import { MailError } from '../src/errors.ts';
-import { parseSesEvents, sesTransport, verifySnsMessage, type SnsMessage } from '../src/transports/ses.ts';
+import { parseSesEvents, type SnsMessage, sesTransport, verifySnsMessage } from '../src/transports/ses.ts';
 import { signV4 } from '../src/transports/sigv4.ts';
 import type { FetchInit, OutboundEnvelope } from '../src/types.ts';
 
@@ -197,7 +197,7 @@ describe('mail-kit/ses: transport', () => {
   });
 
   it('re-reads an identity that already exists instead of failing', async () => {
-    const f = fakeFetch((url, init) => {
+    const f = fakeFetch((_url, init) => {
       if (init.method === 'POST')
         return {
           status: 400,

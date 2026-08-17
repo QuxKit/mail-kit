@@ -71,8 +71,9 @@ function splitMessage(raw: Uint8Array): { headers: string; body: string } {
 function headerFields(block: string): Array<{ name: string; raw: string }> {
   const fields: Array<{ name: string; raw: string }> = [];
   for (const line of block.split(CRLF)) {
-    if (/^[ \t]/.test(line) && fields.length) {
-      fields[fields.length - 1]!.raw += `${CRLF}${line}`;
+    const last = fields[fields.length - 1];
+    if (/^[ \t]/.test(line) && last) {
+      last.raw += `${CRLF}${line}`;
       continue;
     }
     const colon = line.indexOf(':');
@@ -101,8 +102,6 @@ export function relaxBody(body: string): string {
   return lines.length ? lines.join(CRLF) + CRLF : '';
 }
 
-const b64 = (s: string | Buffer) => Buffer.from(s).toString('base64');
-
 /** Prepend a DKIM-Signature header to the message. */
 export function dkimSign(raw: Uint8Array, opts: DkimSignOptions): Uint8Array {
   const { headers: block, body } = splitMessage(raw);
@@ -130,7 +129,8 @@ export function dkimSign(raw: Uint8Array, opts: DkimSignOptions): Uint8Array {
   const signer = createSign('RSA-SHA256');
   for (const name of signed) {
     // last instance of each header name, per RFC (bottom-up)
-    const field = [...fields].reverse().find((f) => f.name === name)!;
+    const field = [...fields].reverse().find((f) => f.name === name);
+    if (!field) continue;
     signer.update(`${relaxHeader(field.raw)}${CRLF}`, 'latin1');
   }
   signer.update(relaxHeader(headerNoB), 'latin1');
@@ -147,7 +147,7 @@ function foldTags(header: string): string {
   for (const tag of header.split('; ')) {
     const piece = cur ? `; ${tag}` : tag;
     if (cur.length + piece.length > 72 && cur) {
-      out.push(cur + ';');
+      out.push(`${cur};`);
       cur = ` ${tag}`;
     } else cur += piece;
   }
@@ -205,7 +205,7 @@ export async function dkimVerify(
 
   const p = await publicKeyFor(selector, domain);
   if (!p) return { ok: false, domain, selector, reason: 'no public key' };
-  const publicKeyPem = `-----BEGIN PUBLIC KEY-----\n${p.match(/.{1,64}/g)!.join('\n')}\n-----END PUBLIC KEY-----\n`;
+  const publicKeyPem = `-----BEGIN PUBLIC KEY-----\n${(p.match(/.{1,64}/g) ?? []).join('\n')}\n-----END PUBLIC KEY-----\n`;
 
   const verifier = createVerify('RSA-SHA256');
   const used = new Map<string, number>();

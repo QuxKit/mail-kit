@@ -27,9 +27,10 @@ export function seal(key: Buffer, plaintext: string): string {
 
 export function unseal(key: Buffer, sealed: string): string {
   const [iv, tag, cipher] = sealed.split(':').map((s) => Buffer.from(s, 'base64'));
-  const d = createDecipheriv('aes-256-gcm', key, iv!);
-  d.setAuthTag(tag!);
-  return Buffer.concat([d.update(cipher!), d.final()]).toString('utf8');
+  if (!iv || !tag || !cipher) throw new Error('mail-kit: sealed value is malformed (expected iv:tag:cipher)');
+  const d = createDecipheriv('aes-256-gcm', key, iv);
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(cipher), d.final()]).toString('utf8');
 }
 
 export const randomToken = (bytes = 24): string => randomBytes(bytes).toString('base64url');
