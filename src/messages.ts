@@ -29,6 +29,8 @@ import type {
   MailTransport,
   Message,
   MessageStatus,
+  RenderedEnvelope,
+  Renderer,
   SendBatchOptions,
   SendInput,
   SendingDomain,
@@ -105,6 +107,16 @@ export interface MessagesApi {
     inputs: readonly SendInput[],
     opts?: SendBatchOptions,
   ): Promise<Array<{ ok: true; message: Message } | { ok: false; error: MailError }>>;
+  /** Render `input` through `renderer`, then `send` it in `envelope`. The
+   *  envelope's `subject` wins over the renderer's; a renderer that yields
+   *  neither html nor text is `invalid_input`, and one that throws, throws. */
+  sendRendered<T>(
+    tenantId: TenantId,
+    renderer: Renderer<T>,
+    input: T,
+    envelope: RenderedEnvelope,
+    opts?: SendOptions,
+  ): Promise<Message>;
   get(tenantId: TenantId, id: string): Promise<Message | null>;
   list(tenantId: TenantId, opts?: ListMessagesOptions): Promise<Message[]>;
   /** Filter by recipient, subject, tags, status and time; newest first,
@@ -576,6 +588,19 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
           throw error;
         }
       });
+    },
+
+    async sendRendered(tenantId, renderer, input, envelope, o) {
+      const rendered = await renderer(input);
+      if (!rendered || typeof rendered !== 'object')
+        throw new MailError({ code: 'invalid_input', reason: 'renderer must return { html?, text?, subject? }' });
+      const subject = envelope.subject ?? rendered.subject;
+      if (typeof subject !== 'string')
+        throw new MailError({
+          code: 'invalid_input',
+          reason: 'subject is required: from the envelope or the renderer',
+        });
+      return api.send(tenantId, { ...envelope, subject, html: rendered.html, text: rendered.text }, o);
     },
 
     async get(tenantId, id) {

@@ -185,6 +185,24 @@ export interface SendInput {
   scheduledAt?: Date;
 }
 
+/** What a renderer produces. `subject` fills in when the envelope has none. */
+export interface RenderedContent {
+  html?: string;
+  text?: string;
+  subject?: string;
+}
+
+/**
+ * The template seam: anything that turns typed input into html/text/subject.
+ * A plain function, react-email's `render`, mjml, a string template — mail-kit
+ * has no opinion and no dependency. May be async. See `docs/TEMPLATES.md`.
+ */
+export type Renderer<T> = (input: T) => RenderedContent | Promise<RenderedContent>;
+
+/** A `SendInput` without the parts a renderer supplies; `subject` here wins
+ *  over the renderer's, so a caller can override a template's. */
+export type RenderedEnvelope = Omit<SendInput, 'html' | 'text' | 'subject'> & { subject?: string };
+
 export type MessageStatus =
   | 'queued'
   | 'scheduled'

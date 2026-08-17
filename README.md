@@ -396,6 +396,23 @@ try {
   the level, a raised one does not hand out tokens retroactively, a bucket
   that had no limit starts full.
 
+## Templates
+
+mail-kit has no template engine; it has a seam:
+
+```ts
+type Renderer<T> = (input: T) => { html?: string; text?: string; subject?: string } | Promise<…>;
+
+await mail.sendRendered(tenantId, welcome, { name: 'Ada', plan: 'Pro' }, { from, to: 'ada@example.org' });
+```
+
+A plain function, react-email's `render`, mjml — mail-kit calls it, then
+`send`s the result in the envelope (a `SendInput` without `html`/`text`;
+its `subject`, if given, wins over the renderer's). No subject from either
+side or no body is `invalid_input`; nothing is written until the render
+succeeds. Recipes, including react-email as a consumer-side dependency,
+are in [docs/TEMPLATES.md](docs/TEMPLATES.md).
+
 ## Batches
 
 `sendBatch(tenantId, inputs, { concurrency?, defer? })` runs independent
