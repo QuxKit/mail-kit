@@ -1,5 +1,5 @@
 -- mail-kit 002: hardening. Delivery-event de-duplication; what render() needs
--- to reproduce a sent message exactly.
+-- to reproduce a sent message exactly; webhook secrets sealed at rest.
 --
 --   psql -v ON_ERROR_STOP=1 -f sql/002_hardening.sql
 --
@@ -30,3 +30,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS events_dedup_idx
 -- instant, and the DKIM-Signature header as signed. Written with the `sent`
 -- update; NULL for messages not yet sent (render then builds fresh).
 ALTER TABLE mail.messages ADD COLUMN IF NOT EXISTS rendering jsonb;
+
+-- Webhook secrets sealed at rest under config.dkimKey (AES-256-GCM, the same
+-- key path as DKIM private keys). New rows carry `secret_sealed` and a NULL
+-- `secret` when a key is configured; rows from before (or without a key)
+-- keep `secret`. Delivery reads whichever is set, so the key can be
+-- introduced on a live database. To seal existing rows, recreate the
+-- subscriptions (secrets are shown once; a re-seal cannot be done in SQL
+-- because the key is not in the database, by design).
+ALTER TABLE mail.webhook_subscriptions ADD COLUMN IF NOT EXISTS secret_sealed text;
+ALTER TABLE mail.webhook_subscriptions ALTER COLUMN secret DROP NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'webhook_subscriptions_secret_present' AND conrelid = 'mail.webhook_subscriptions'::regclass
+  ) THEN
+    ALTER TABLE mail.webhook_subscriptions
+      ADD CONSTRAINT webhook_subscriptions_secret_present CHECK (secret IS NOT NULL OR secret_sealed IS NOT NULL);
+  END IF;
+END;
+$$;

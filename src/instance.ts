@@ -55,6 +55,7 @@ export function createMail(opts: MailOptions): Mail {
     maxAttempts: config.webhookMaxAttempts,
     resolve: dnsLookup ? dnsLookup.bind(opts.dns) : undefined,
     allowInsecureHttp: config.allowInsecureHttp,
+    sealKey: config.dkimKey,
   });
   const events = createEvents({ db: opts.db, suppression, webhooks, clock, logger: opts.logger });
   const domains = createDomains({

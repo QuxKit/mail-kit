@@ -702,11 +702,22 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
 
   describe('webhook delivery', () => {
     const fetch = new FakeFetch();
-    const mail = createMail({ db: h.db, transport: memoryTransport(), fetch: fetch.fetch, clock, dns: new FakeDns() });
+    // dkimKey set: subscription secrets are sealed at rest (and this instance
+    // can drain the sealed rows earlier suites queued)
+    const mail = createMail({
+      db: h.db,
+      transport: memoryTransport(),
+      fetch: fetch.fetch,
+      clock,
+      dns: new FakeDns(),
+      config: { dkimKey: testDkimKey },
+    });
     const T3 = 'tenant_hooks';
 
     it('signs and posts, retries on failure with backoff, and gives up after the schedule', async () => {
-      await mail.webhooks.deliverPending(500, now); // drain what earlier suites queued
+      // drain what earlier suites queued (including sealed rows an unkeyed
+      // instance's tick() pushed 5s out)
+      await mail.webhooks.deliverPending(500, new Date(now.getTime() + 3_600_000));
       const hook = await mail.webhooks.create(T3, { url: 'https://hooks.example/x', events: ['email.delivered'] });
       assert.match(hook.secret, /^whsec_/);
       assert.equal((await mail.webhooks.list(T3))[0]!.id, hook.id);
@@ -744,7 +755,7 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
         fetch: fetch.fetch,
         clock,
         dns: new FakeDns(),
-        config: { webhookMaxAttempts: 2 },
+        config: { webhookMaxAttempts: 2, dkimKey: testDkimKey },
       });
       await strict.webhooks.enqueue(T3, 'email.delivered', { email_id: 'e2' });
       fetch.respondNext(503, 503);
@@ -761,6 +772,60 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
       await assert.rejects(mail.webhooks.create(T3, { url: 'ftp://x', events: ['email.sent'] }), (e: unknown) =>
         MailError.hasCode(e, 'invalid_input'),
       );
+    });
+
+    it('seals secrets at rest under config.dkimKey, and reads plaintext rows from before the key', async () => {
+      const T8 = 'tenant_sealed';
+      const hook = await mail.webhooks.create(T8, { url: 'https://hooks.example/sealed', events: ['email.sent'] });
+      const [row] = await h.db.query<{ secret: string | null; secret_sealed: string | null }>(
+        'SELECT secret, secret_sealed FROM mail.webhook_subscriptions WHERE id = $1',
+        [hook.id],
+      );
+      assert.equal(row!.secret, null, 'plaintext column empty');
+      assert.ok(row!.secret_sealed, 'sealed column set');
+      assert.ok(!row!.secret_sealed!.includes(hook.secret.slice(6, 20)), 'ciphertext does not carry the secret');
+      // and it still signs with the secret the caller was shown once
+      await mail.webhooks.enqueue(T8, 'email.sent', { email_id: 'sealed-1' });
+      assert.deepEqual(await mail.webhooks.deliverPending(50, now), { delivered: 1, failed: 0, retried: 0 });
+      const call = fetch.calls.at(-1)!;
+      assert.ok(verifyWebhookSignature(hook.secret, call.init.headers, call.init.body!, { now }));
+
+      // an instance without the key stores as written; a keyed instance still delivers that row
+      const plain = createMail({
+        db: h.db,
+        transport: memoryTransport(),
+        fetch: fetch.fetch,
+        clock,
+        dns: new FakeDns(),
+      });
+      const legacy = await plain.webhooks.create(T8, { url: 'https://hooks.example/plain', events: ['email.bounced'] });
+      const [prow] = await h.db.query<{ secret: string | null; secret_sealed: string | null }>(
+        'SELECT secret, secret_sealed FROM mail.webhook_subscriptions WHERE id = $1',
+        [legacy.id],
+      );
+      assert.equal(prow!.secret, legacy.secret);
+      assert.equal(prow!.secret_sealed, null);
+      await mail.webhooks.enqueue(T8, 'email.bounced', { email_id: 'plain-1' });
+      assert.deepEqual(await mail.webhooks.deliverPending(50, now), { delivered: 1, failed: 0, retried: 0 });
+      assert.ok(
+        verifyWebhookSignature(legacy.secret, fetch.calls.at(-1)!.init.headers, fetch.calls.at(-1)!.init.body!, {
+          now,
+        }),
+      );
+
+      // an unkeyed instance cannot sign for a sealed row: left to retry, with the reason recorded
+      await mail.webhooks.enqueue(T8, 'email.sent', { email_id: 'sealed-2' });
+      assert.deepEqual(await plain.webhooks.deliverPending(50, now), { delivered: 0, failed: 0, retried: 1 });
+      const [stuck] = await plain.webhooks.listDeliveries(T8);
+      assert.equal(stuck!.status, 'pending');
+      assert.match(stuck!.lastError!, /sealed but no sealKey/);
+      assert.deepEqual(await mail.webhooks.deliverPending(50, new Date(now.getTime() + 5000)), {
+        delivered: 1,
+        failed: 0,
+        retried: 0,
+      });
+      await mail.webhooks.remove(T8, hook.id);
+      await mail.webhooks.remove(T8, legacy.id);
     });
 
     it('refuses webhook URLs that point inside: at create, and again at delivery', async () => {

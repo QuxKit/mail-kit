@@ -72,10 +72,11 @@ export type TenantId = string;
 
 export interface MailConfig {
   /**
-   * 32 bytes as 64 hex chars (`openssl rand -hex 32`). Required only when a
-   * domain is added on a transport that does not sign — mail-kit then generates
-   * the DKIM key pair and this is the AES-256-GCM key its private half is
-   * sealed under before it reaches the database. Kept out of the database and
+   * 32 bytes as 64 hex chars (`openssl rand -hex 32`). The AES-256-GCM key
+   * under which secrets are sealed before they reach the database: the DKIM
+   * private key mail-kit generates for a domain on a transport that does not
+   * sign (required for that), and webhook subscription secrets (sealed when
+   * this is set; stored as written otherwise). Kept out of the database and
    * out of the backup, like identity-kit's pepper.
    */
   dkimKey?: string;
