@@ -7,6 +7,15 @@ All notable changes to `@quxkit/mail-kit` are recorded here. The format is
 ## [Unreleased]
 
 ### Added
+- Unsubscribe tokens and the RFC 8058 one-click handler:
+  `mail.unsubscribe.token/url/verify/apply/handleOneClick`
+  (`createUnsubscribe`); `MailConfig.unsubscribeUrl` makes `send()` set
+  `List-Unsubscribe` + `List-Unsubscribe-Post` for single-recipient
+  messages; `SendInput.listId`; `Suppression.listId`,
+  `AddSuppressionInput.listId`, `SuppressionScope` on
+  `suppression.remove/list/check`; `sql/003_unsubscribe.sql`
+  (`suppressions.list_id`, scope index re-keyed); typed error
+  `mail_key_required { purpose }`.
 - `@quxkit/mail-kit/pg`: `pgExecutor(pool)` — the shipped node-postgres
   adapter (pinned-connection transactions, nested transactions as savepoints).
   `pg` is an optional peer dependency.

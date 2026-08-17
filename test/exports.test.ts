@@ -34,6 +34,7 @@ describe('mail-kit/exports', () => {
       'assertWebhookUrlAllowed',
       'forbiddenAddressReason',
       'clampLimit',
+      'createUnsubscribe',
       'MailError',
     ]) {
       assert.equal(typeof (root as Record<string, unknown>)[name], 'function', name);
