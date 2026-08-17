@@ -18,16 +18,23 @@ const pool = new pg.Pool({
 const transport = memoryTransport({ manageDomains: true });
 const posted: string[] = [];
 
+// Dev only: "DNS" is a map this script fills in with the records the domain
+// asks for (as if you had published them), and webhooks post to a fetch that
+// just records them. In production leave `dns` and `fetch` off: node's
+// resolver and the global fetch are the defaults.
+const published = {
+  txt: new Map<string, string[]>(),
+  cname: new Map<string, string[]>(),
+  mx: new Map<string, string[]>(),
+};
 const mail = createMail({
   db: pgExecutor(pool),
   transport,
-  // Dev only: this example verifies "DNS" by asking the memory transport, and
-  // posts webhooks to a fetch that just records them.
   dns: {
-    resolveTxt: async () => ['v=spf1 include:example ~all', 'v=DMARC1; p=none;'],
-    resolveCname: async (name) => [`${name.split('.')[0]}.dkim.example`],
-    resolveMx: async () => [{ exchange: 'feedback.example', priority: 10 }],
-    lookup: async () => ['203.0.113.10'],
+    resolveTxt: async (name) => published.txt.get(name) ?? [],
+    resolveCname: async (name) => published.cname.get(name) ?? [],
+    resolveMx: async (name) => (published.mx.get(name) ?? []).map((exchange) => ({ exchange, priority: 10 })),
+    lookup: async () => ['203.0.113.10'], // every webhook host "resolves" to a public address here
   },
   fetch: async (url, init) => {
     posted.push(`${init.method} ${url} ${init.headers['webhook-signature']}`);
@@ -38,11 +45,18 @@ const mail = createMail({
 const tenantId = 'acme';
 
 // 1. a sending domain: publish the checklist, then verify
+// re-runnable: clear what a previous run left
+for (const d of await mail.domains.list(tenantId)) await mail.domains.remove(tenantId, d.id);
+for (const w of await mail.webhooks.list(tenantId)) await mail.webhooks.remove(tenantId, w.id);
 const domain = await mail.domains.add(tenantId, { name: 'example.com' });
 console.log(
   'records to publish:',
-  domain.records.map((r) => `${r.type} ${r.name}`),
+  domain.records.map((r) => `${r.type} ${r.name} -> ${r.value}`),
 );
+for (const r of domain.records) {
+  const bucket = r.type === 'TXT' ? published.txt : r.type === 'CNAME' ? published.cname : published.mx;
+  bucket.set(r.name, [...(bucket.get(r.name) ?? []), r.value]);
+}
 const verified = await mail.domains.verify(tenantId, domain.id);
 console.log('domain status:', verified.status);
 
