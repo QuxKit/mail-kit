@@ -189,6 +189,32 @@ export const ALL_WEBHOOK_EVENTS: readonly WebhookEventType[] = [
   'domain.failed',
 ];
 
+/**
+ * Queue one delivery per enabled subscription of `tenantId` that wants
+ * `type`, on `db` — which may be a transaction, and is when `events.record`
+ * calls it, so an event's row, status change, suppression and webhook rows
+ * commit or roll back together. Returns how many were queued.
+ */
+export async function enqueueWebhookDeliveries(
+  db: SqlExecutor,
+  tenantId: TenantId,
+  type: WebhookEventType,
+  data: Record<string, unknown>,
+  at: Date,
+  now: Date,
+): Promise<number> {
+  const payload: WebhookPayload = { type, created_at: at.toISOString(), data };
+  const rows = await db.query<{ id: string }>(
+    `INSERT INTO mail.webhook_deliveries (subscription_id, tenant_id, event_type, payload, next_attempt_at)
+     SELECT id, tenant_id, $2, $3::jsonb, $4
+       FROM mail.webhook_subscriptions
+      WHERE tenant_id = $1 AND enabled AND $2 = ANY(events)
+     RETURNING id`,
+    [tenantId, type, JSON.stringify(payload), now],
+  );
+  return rows.length;
+}
+
 export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
   const { db, fetch } = opts;
   const clock: Clock = opts.clock ?? (() => new Date());
@@ -251,18 +277,7 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
       return rows.length > 0;
     },
 
-    async enqueue(tenantId, type, data, at) {
-      const payload: WebhookPayload = { type, created_at: (at ?? clock()).toISOString(), data };
-      const rows = await db.query<{ id: string }>(
-        `INSERT INTO mail.webhook_deliveries (subscription_id, tenant_id, event_type, payload, next_attempt_at)
-         SELECT id, tenant_id, $2, $3::jsonb, $4
-           FROM mail.webhook_subscriptions
-          WHERE tenant_id = $1 AND enabled AND $2 = ANY(events)
-         RETURNING id`,
-        [tenantId, type, JSON.stringify(payload), clock()],
-      );
-      return rows.length;
-    },
+    enqueue: (tenantId, type, data, at) => enqueueWebhookDeliveries(db, tenantId, type, data, at ?? clock(), clock()),
 
     async deliverPending(limit = 50, now = clock()) {
       const out = { delivered: 0, failed: 0, retried: 0 };

@@ -7,7 +7,7 @@
 // wires the provider's callback to it and is done, and no host ever forgets
 // to suppress a complainer.
 
-import { normaliseForSuppression, type SuppressionApi } from './suppression.ts';
+import { createSuppression, normaliseForSuppression, type SuppressionApi } from './suppression.ts';
 import type {
   Clock,
   DeliveryEvent,
@@ -18,11 +18,14 @@ import type {
   SqlExecutor,
   WebhookEventType,
 } from './types.ts';
-import type { WebhooksApi } from './webhooks.ts';
+import { enqueueWebhookDeliveries, type WebhooksApi } from './webhooks.ts';
 
 export interface EventsOptions {
   db: SqlExecutor;
+  /** Kept for compatibility. `record` writes suppressions and webhook rows
+   *  through its own transaction, not through this instance's executor. */
   suppression: SuppressionApi;
+  /** Kept for compatibility; see `suppression`. */
   webhooks: WebhooksApi;
   clock?: Clock;
   logger?: Logger;
@@ -128,7 +131,8 @@ export function messageData(m: MessageRow, event?: DeliveryEvent): Record<string
 }
 
 export function createEvents(opts: EventsOptions): EventsApi {
-  const { db, suppression, webhooks } = opts;
+  const { db } = opts;
+  const clock: Clock = opts.clock ?? (() => new Date());
 
   const findMessage = async (tx: SqlExecutor, e: DeliveryEvent): Promise<MessageRow | null> => {
     const cols = 'id, tenant_id, status, from_address, to_addresses, subject, tags, provider_message_id, created_at';
@@ -206,7 +210,9 @@ export function createEvents(opts: EventsOptions): EventsApi {
 
           // Suppression is the point of the whole event path. Hard bounce → the
           // tenant's list; complaint → the global list (mailbox providers do
-          // not forgive per-tenant).
+          // not forgive per-tenant). Both on `tx`: if the webhook insert below
+          // fails, the suppression does not outlive the event it came with.
+          const suppression = createSuppression({ db: tx, clock });
           if (e.recipient && e.type === 'bounced' && e.bounce?.kind !== 'soft') {
             await suppression.add(message.tenant_id, {
               address: e.recipient,
@@ -221,7 +227,14 @@ export function createEvents(opts: EventsOptions): EventsApi {
             });
           }
 
-          await webhooks.enqueue(message.tenant_id, WEBHOOK_TYPE[e.type], messageData(message, e), e.at);
+          await enqueueWebhookDeliveries(
+            tx,
+            message.tenant_id,
+            WEBHOOK_TYPE[e.type],
+            messageData(message, e),
+            e.at,
+            clock(),
+          );
           return toEvent(row);
         });
         out.push(stored);

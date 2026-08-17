@@ -11,6 +11,7 @@ import { MailError } from '../src/errors.ts';
 import { createMail, type Mail } from '../src/instance.ts';
 import { type MemoryTransport, memoryTransport } from '../src/transports/memory.ts';
 import { parseSesEvents } from '../src/transports/ses.ts';
+import type { SqlExecutor } from '../src/types.ts';
 import { verifyWebhookSignature } from '../src/webhooks.ts';
 import { FakeDns, FakeFetch, type Harness, SKIP_REASON, setupDatabase, testDkimKey } from './harness.ts';
 
@@ -582,6 +583,50 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
       const [o2] = await mail.events.record([{ type: 'delivered', providerMessageId: 'orphan-replay', at: now }]);
       assert.equal(o2!.deduplicated, true);
       assert.equal(o2!.id, o1!.id);
+    });
+
+    it('record is one transaction: a failing webhook insert rolls back the event, the status and the suppression', async () => {
+      const m = await mail.send(T2, {
+        from: 'a@events.example',
+        to: ['erin@example.org'],
+        subject: 'atomic',
+        text: 't',
+      });
+      const boom = (text: string) => /INSERT INTO mail\.webhook_deliveries/.test(text);
+      const wrap = (inner: SqlExecutor): SqlExecutor => ({
+        query: (text, params) =>
+          boom(text) ? Promise.reject(new Error('webhook insert boom')) : inner.query(text, params),
+        transaction: (fn) => inner.transaction((tx) => fn(wrap(tx))),
+      });
+      const flaky = createMail({ db: wrap(h.db), transport, dns, fetch: fetch.fetch, clock });
+      const eventsBefore = (await mail.events.list(T2, m.id)).length;
+      await assert.rejects(
+        flaky.events.record([
+          {
+            type: 'bounced',
+            providerMessageId: m.providerMessageId!,
+            recipient: 'erin@example.org',
+            at: now,
+            bounce: { kind: 'hard', subtype: 'General' },
+          },
+        ]),
+        /webhook insert boom/,
+      );
+      assert.equal((await mail.get(T2, m.id))!.status, 'sent', 'status not changed');
+      assert.equal((await mail.suppression.check(T2, ['erin@example.org'])).size, 0, 'suppression rolled back');
+      assert.equal((await mail.events.list(T2, m.id)).length, eventsBefore, 'event row rolled back');
+      // and the same event then records cleanly — it was not half-stored
+      const [ok] = await mail.events.record([
+        {
+          type: 'bounced',
+          providerMessageId: m.providerMessageId!,
+          recipient: 'erin@example.org',
+          at: now,
+          bounce: { kind: 'hard', subtype: 'General' },
+        },
+      ]);
+      assert.equal(ok!.deduplicated, undefined);
+      assert.equal((await mail.get(T2, m.id))!.status, 'bounced');
     });
   });
 
