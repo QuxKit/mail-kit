@@ -267,7 +267,12 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
       await assert.rejects(mail.cancel(T1, m.id), (e: unknown) => MailError.hasCode(e, 'invalid_state'));
 
       const c = await mail.send(T1, { from: 'ada@app.example', to: 'bob@example.org', subject: 'never', text: 't', scheduledAt: later });
+      const moved = await mail.reschedule(T1, c.id, new Date(later.getTime() + 60_000));
+      assert.equal(moved.status, 'scheduled');
+      assert.equal(moved.scheduledAt!.getTime(), later.getTime() + 60_000);
+      assert.equal((await mail.payload(T1, c.id))!.subject, 'never');
       assert.equal((await mail.cancel(T1, c.id)).status, 'canceled');
+      await assert.rejects(mail.reschedule(T1, c.id, later), (e: unknown) => MailError.hasCode(e, 'invalid_state'));
       assert.deepEqual(await mail.deliverPending(50, later), { sent: 0, failed: 0, retried: 0 });
       await assert.rejects(mail.cancel(T1, '00000000-0000-0000-0000-000000000000'), (e: unknown) => MailError.hasCode(e, 'not_found'));
     });

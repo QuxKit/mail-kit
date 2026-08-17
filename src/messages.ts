@@ -61,6 +61,11 @@ export interface MessagesApi {
   list(tenantId: TenantId, opts?: ListMessagesOptions): Promise<Message[]>;
   /** A queued or scheduled message will not be sent. */
   cancel(tenantId: TenantId, id: string): Promise<Message>;
+  /** Move a scheduled message; `at` in the past means "now". */
+  reschedule(tenantId: TenantId, id: string, at: Date): Promise<Message>;
+  /** The stored, normalised input for a message (bodies, attachments) — what
+   *  `render` builds from, exposed for a dashboard's detail view. */
+  payload(tenantId: TenantId, id: string): Promise<StoredPayload | null>;
   /** Deliver everything due — queued, scheduled, or waiting on a retry. What a
    *  worker calls in a loop. Safe to run from several processes. */
   deliverPending(limit?: number, now?: Date): Promise<{ sent: number; failed: number; retried: number }>;
@@ -419,6 +424,26 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       const current = await getRow(tenantId, id);
       if (!current) throw new MailError({ code: 'not_found', what: 'message', id });
       throw new MailError({ code: 'invalid_state', id, status: current.status, operation: 'cancel' });
+    },
+
+    async reschedule(tenantId, id, at) {
+      const now = clock();
+      const future = at.getTime() > now.getTime();
+      const rows = await db.query<Row>(
+        `UPDATE mail.messages
+            SET status = CASE WHEN $3::boolean THEN 'scheduled' ELSE 'queued' END, scheduled_at = $4, next_attempt_at = $4
+          WHERE tenant_id = $1 AND id = $2 AND status = 'scheduled' RETURNING ${COLUMNS}`,
+        [tenantId, id, future, future ? at : now],
+      );
+      if (rows[0]) return toMessage(rows[0]);
+      const current = await getRow(tenantId, id);
+      if (!current) throw new MailError({ code: 'not_found', what: 'message', id });
+      throw new MailError({ code: 'invalid_state', id, status: current.status, operation: 'reschedule' });
+    },
+
+    async payload(tenantId, id) {
+      const row = await getRow(tenantId, id);
+      return row?.payload ?? null;
     },
 
     async deliverPending(limit = 50, now = clock()) {
