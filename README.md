@@ -127,6 +127,7 @@ Apply the schema first, in order:
 psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/001_mail.sql
 psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/002_hardening.sql
 psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/003_unsubscribe.sql
+psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/004_search.sql
 ```
 
 `@quxkit/mail-kit/pg` is the shipped `SqlExecutor` over a `pg.Pool` (`pg` is
@@ -325,6 +326,37 @@ app.post('/u/:token', async (req, res) => {
 - `unsubscribeUrl` without `dkimKey` is `mail_key_required` at the first
   send, before any row.
 
+## Search
+
+`messages.list` pages a tenant's log by status; `messages.search` is the
+dashboard's find box:
+
+```ts
+const page = await mail.search(
+  {
+    tenantId,
+    to: 'ada@example.org',          // a To recipient (exact address)
+    subject: 'order #10',           // case-insensitive substring; % and _ are literal
+    tag: { kind: 'order' },         // every pair must be present
+    status: ['sent', 'delivered'],  // one or several
+    sentAfter, sentBefore,          // bounds on sentAt (unsent never match)
+    createdAfter, createdBefore,    // bounds on createdAt
+  },
+  { limit: 50, cursor: null },      // limit <= 200
+);
+page.messages;    // newest first
+page.nextCursor;  // pass back as `cursor`; null on the last page
+```
+
+Every filter is optional and they AND together. Paging is keyset on
+`(createdAt, id)` — an opaque cursor, so a page is stable while new rows
+arrive and a cursor that is not one search returned is `invalid_input`.
+`sql/004_search.sql` adds the indexes: GIN on `to_addresses`, GIN
+(`jsonb_path_ops`) on `tags`, `(tenant_id, created_at, id)` for the
+ordering (superseding the 001 tenant index) and a partial
+`(tenant_id, sent_at)`. Subject search is `ILIKE`; add `pg_trgm` and a
+trigram index on `subject` yourself if that becomes the hot filter.
+
 ## The worker
 
 `send` delivers inline by default. Scheduled sends, retries, webhook
@@ -350,7 +382,8 @@ application's tables. `sql/001_mail.sql` declares `domains`, `messages`,
 `sql/002_hardening.sql` adds the event de-duplication index,
 `messages.rendering` and `webhook_subscriptions.secret_sealed`;
 `sql/003_unsubscribe.sql` adds `suppressions.list_id` and re-keys the
-scope index on (tenant, list, address). Files are
+scope index on (tenant, list, address); `sql/004_search.sql` adds the
+search indexes. Files are
 numbered, re-runnable and applied in order. Events and deliveries cascade
 from their parents; a message keeps its history when its domain is removed.
 

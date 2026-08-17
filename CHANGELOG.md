@@ -7,6 +7,11 @@ All notable changes to `@quxkit/mail-kit` are recorded here. The format is
 ## [Unreleased]
 
 ### Added
+- `messages.search(query, page)`: filter by `to`, `subject`, `tag`, `status`,
+  `sentAfter/Before`, `createdAfter/Before`; keyset paging with an opaque
+  cursor (`SearchQuery`, `SearchPage`, `SearchResult`); `sql/004_search.sql`
+  (GIN on `to_addresses` and `tags`, `(tenant_id, created_at, id)`, partial
+  `(tenant_id, sent_at)`; drops the superseded `messages_tenant_idx`).
 - Unsubscribe tokens and the RFC 8058 one-click handler:
   `mail.unsubscribe.token/url/verify/apply/handleOneClick`
   (`createUnsubscribe`); `MailConfig.unsubscribeUrl` makes `send()` set
