@@ -10,6 +10,7 @@ import { dkimVerify } from '../src/dkim.ts';
 import { MailError } from '../src/errors.ts';
 import { createMail, type Mail } from '../src/instance.ts';
 import { type MemoryTransport, memoryTransport } from '../src/transports/memory.ts';
+import { parseSesEvents } from '../src/transports/ses.ts';
 import { verifyWebhookSignature } from '../src/webhooks.ts';
 import { FakeDns, FakeFetch, type Harness, SKIP_REASON, setupDatabase, testDkimKey } from './harness.ts';
 
@@ -494,7 +495,7 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
           type: 'bounced',
           providerMessageId: providerId,
           recipient: 'carol@example.org',
-          at: now,
+          at: new Date(now.getTime() + 1000), // a later event, not a replay of the soft one
           bounce: { kind: 'hard', subtype: 'General', diagnostic: '550 5.1.1' },
         },
       ]);
@@ -525,12 +526,62 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
       const events = await mail.events.list(T2, id);
       assert.deepEqual(
         events.map((e) => e.type),
-        ['sent', 'delivered', 'bounced', 'bounced', 'complained', 'opened', 'clicked'],
+        ['sent', 'delivered', 'bounced', 'complained', 'opened', 'clicked', 'bounced'],
+        'ordered by when they occurred; the hard bounce came a second later',
       );
-      assert.equal(events.at(-1)!.detail.url, 'https://x.example');
+      assert.equal(events.find((e) => e.type === 'clicked')!.detail.url, 'https://x.example');
       const [orphan] = await mail.events.record([{ type: 'delivered', providerMessageId: 'never-seen', at: now }]);
       assert.equal(orphan!.messageId, null);
       assert.equal(orphan!.tenantId, null);
+    });
+
+    it('a replayed provider notification is de-duplicated: no second suppression, no second webhook', async () => {
+      const m = await mail.send(T2, {
+        from: 'a@events.example',
+        to: ['dave@example.org'],
+        subject: 'replay',
+        text: 't',
+      });
+      const sns = {
+        Type: 'Notification',
+        Message: JSON.stringify({
+          eventType: 'Bounce',
+          mail: { messageId: m.providerMessageId, timestamp: '2026-08-16T12:00:00.000Z' },
+          bounce: {
+            bounceType: 'Permanent',
+            bounceSubType: 'General',
+            bouncedRecipients: [{ emailAddress: 'dave@example.org', diagnosticCode: 'smtp; 550' }],
+            timestamp: '2026-08-16T12:00:07.000Z',
+          },
+        }),
+      };
+      const hooksBefore = (await mail.webhooks.listDeliveries(T2)).length;
+      const first = await mail.events.record(parseSesEvents(sns));
+      assert.equal(first.length, 1);
+      assert.equal(first[0]!.deduplicated, undefined);
+      assert.equal((await mail.get(T2, m.id))!.status, 'bounced');
+      assert.equal((await mail.webhooks.listDeliveries(T2)).length, hooksBefore + 1);
+      const suppressedAt = (await mail.suppression.list(T2)).find((s) => s.address === 'dave@example.org')!;
+      assert.ok(suppressedAt);
+
+      // SNS retries the same notification (and a host replays its queue)
+      await mail.suppression.remove(T2, 'dave@example.org');
+      const again = await mail.events.record(parseSesEvents(sns));
+      assert.equal(again.length, 1);
+      assert.equal(again[0]!.deduplicated, true);
+      assert.equal(again[0]!.id, first[0]!.id, 'the stored row is returned');
+      assert.equal((await mail.webhooks.listDeliveries(T2)).length, hooksBefore + 1, 'no second webhook');
+      assert.equal((await mail.suppression.check(T2, ['dave@example.org'])).size, 0, 'not re-suppressed');
+      assert.deepEqual(
+        (await mail.events.list(T2, m.id)).map((e) => e.type).sort(),
+        ['bounced', 'sent'],
+        'one bounce row',
+      );
+      // an orphan replay is de-duplicated too
+      const [o1] = await mail.events.record([{ type: 'delivered', providerMessageId: 'orphan-replay', at: now }]);
+      const [o2] = await mail.events.record([{ type: 'delivered', providerMessageId: 'orphan-replay', at: now }]);
+      assert.equal(o2!.deduplicated, true);
+      assert.equal(o2!.id, o1!.id);
     });
   });
 

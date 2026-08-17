@@ -5,7 +5,8 @@
 // worth testing — the idempotency conflict on a unique index, SKIP LOCKED
 // claims, the suppression upsert — is in the database, not the TypeScript.
 
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
@@ -98,7 +99,9 @@ export async function setupDatabase(): Promise<Harness | null> {
     return null;
   }
   await pool.query('DROP SCHEMA IF EXISTS mail CASCADE');
-  await pool.query(await readFile(fileURLToPath(new URL('../sql/001_mail.sql', import.meta.url)), 'utf8'));
+  const sqlDir = fileURLToPath(new URL('../sql/', import.meta.url));
+  const files = (await readdir(sqlDir)).filter((f) => /^\d{3}_.*\.sql$/.test(f)).sort();
+  for (const f of files) await pool.query(await readFile(join(sqlDir, f), 'utf8'));
   return { db: pgExecutor(pool), pool, close: () => pool.end() };
 }
 

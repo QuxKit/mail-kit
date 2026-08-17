@@ -29,8 +29,13 @@ export interface EventsOptions {
 }
 
 export interface EventsApi {
-  /** Record events; returns what was stored, in order. Unknown messages are
-   *  kept as orphan rows (no tenant, no webhook) rather than dropped. */
+  /**
+   * Record events; returns what was stored, in order. Unknown messages are
+   * kept as orphan rows (no tenant, no webhook) rather than dropped. A replay
+   * — same provider id, type, recipient and instant as a stored event — is
+   * returned with `deduplicated: true` and does nothing else: no status
+   * change, no suppression, no webhook.
+   */
   record(events: readonly DeliveryEvent[]): Promise<RecordedEvent[]>;
   list(tenantId: string, messageId: string): Promise<RecordedEvent[]>;
 }
@@ -155,28 +160,45 @@ export function createEvents(opts: EventsOptions): EventsApi {
           if (e.userAgent) detail.userAgent = e.userAgent;
           if (e.raw !== undefined) detail.raw = e.raw;
 
+          const recipient = e.recipient ? normaliseForSuppression(e.recipient) : null;
+          const providerMessageId = e.providerMessageId ?? message?.provider_message_id ?? null;
           const rows = await tx.query<EventRow>(
             `INSERT INTO mail.events (message_id, tenant_id, type, recipient, provider_message_id, occurred_at, detail)
              VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+             ON CONFLICT (provider_message_id, COALESCE(message_id::text, ''), type, COALESCE(recipient, ''), occurred_at)
+               WHERE provider_message_id IS NOT NULL DO NOTHING
              RETURNING id, message_id, tenant_id, type, recipient, occurred_at, detail`,
             [
               message?.id ?? null,
               message?.tenant_id ?? null,
               e.type,
-              e.recipient ? normaliseForSuppression(e.recipient) : null,
-              e.providerMessageId ?? message?.provider_message_id ?? null,
+              recipient,
+              providerMessageId,
               e.at,
               JSON.stringify(detail),
             ],
           );
-          // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING always yields one row
-          const row = rows[0]!;
+          let row = rows[0];
+          if (!row) {
+            // A replay: the provider redelivered a notification we already
+            // hold. Nothing follows — the status, the suppression and the
+            // webhooks all happened the first time.
+            const existing = await tx.query<EventRow>(
+              `SELECT id, message_id, tenant_id, type, recipient, occurred_at, detail FROM mail.events
+                WHERE provider_message_id = $1 AND COALESCE(message_id::text, '') = $2 AND type = $3
+                  AND COALESCE(recipient, '') = $4 AND occurred_at = $5`,
+              [providerMessageId, message?.id ?? '', e.type, recipient ?? '', e.at],
+            );
+            row = existing[0];
+            if (!row) throw new Error('mail-kit: event insert conflicted but no row was found');
+            return { ...toEvent(row), deduplicated: true };
+          }
           if (!message) {
             opts.logger?.warn('delivery event for unknown message', {
               type: e.type,
               providerMessageId: e.providerMessageId,
             });
-            return row;
+            return toEvent(row);
           }
 
           const status = nextStatus(message.status, e);
@@ -200,9 +222,9 @@ export function createEvents(opts: EventsOptions): EventsApi {
           }
 
           await webhooks.enqueue(message.tenant_id, WEBHOOK_TYPE[e.type], messageData(message, e), e.at);
-          return row;
+          return toEvent(row);
         });
-        out.push(toEvent(stored));
+        out.push(stored);
       }
       return out;
     },

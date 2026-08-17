@@ -371,6 +371,9 @@ export interface RecordedEvent {
   recipient: string | null;
   at: Date;
   detail: Record<string, unknown>;
+  /** True when this event was already stored (a provider replay) and the
+   *  call therefore changed nothing. */
+  deduplicated?: boolean;
 }
 
 // --- suppression ------------------------------------------------------------
