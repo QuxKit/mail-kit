@@ -128,6 +128,7 @@ psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/001_mail.sql
 psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/002_hardening.sql
 psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/003_unsubscribe.sql
 psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/004_search.sql
+psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/005_quotas.sql
 ```
 
 `@quxkit/mail-kit/pg` is the shipped `SqlExecutor` over a `pg.Pool` (`pg` is
@@ -357,6 +358,44 @@ ordering (superseding the 001 tenant index) and a partial
 `(tenant_id, sent_at)`. Subject search is `ILIKE`; add `pg_trgm` and a
 trigram index on `subject` yourself if that becomes the hot filter.
 
+## Quotas
+
+One tenant must not spend the transport's rate or the account's daily
+allowance for everyone:
+
+```ts
+const mail = createMail({ db, transport, config: { quotas: { perMinute: 60, perDay: 10_000 } } });
+
+await mail.quotas.set(bigTenant, { perMinute: 600, perDay: null });  // its own; null = no limit
+await mail.quotas.set(bigTenant, null);                               // back to the config default
+(await mail.quotas.get(tenantId)).remaining;                          // { minute: 41.5, day: 9_988 }
+
+try {
+  await mail.send(tenantId, input);
+} catch (e) {
+  if (MailError.hasCode(e, 'quota_exceeded')) e.failure.retryAfterMs; // and .window, .limit
+}
+```
+
+- **Two token buckets per tenant** (`sql/005_quotas.sql`): a minute's worth
+  and a day's worth, refilling continuously (`perMinute/60` a second,
+  `perDay/86400`) up to capacity — a burst to the limit is fine, a steady
+  stream at the rate never blocks. Nothing runs on a timer: the level is
+  derived from `refilled_at` on read.
+- **The database serialises.** `consume` runs under the tenant's row lock,
+  so N parallel sends admit exactly the limit — across processes, not just
+  within one. A tenant with no limit from either source costs one primary
+  key lookup and writes no row.
+- **Charged on accept, not on departure**: a `send` (inline, deferred or
+  scheduled) takes one token when the row is written; a worker retry, a
+  keyed replay, an idempotency conflict and a fully suppressed send take
+  none. A refused send is `quota_exceeded` with `window`, `limit` and
+  `retryAfterMs` (until one token is back in the emptier bucket), and
+  leaves no row. `sendBatch` reports it per item.
+- `set(tenantId, limits)` settles the buckets first: a lowered limit clamps
+  the level, a raised one does not hand out tokens retroactively, a bucket
+  that had no limit starts full.
+
 ## The worker
 
 `send` delivers inline by default. Scheduled sends, retries, webhook
@@ -383,7 +422,7 @@ application's tables. `sql/001_mail.sql` declares `domains`, `messages`,
 `messages.rendering` and `webhook_subscriptions.secret_sealed`;
 `sql/003_unsubscribe.sql` adds `suppressions.list_id` and re-keys the
 scope index on (tenant, list, address); `sql/004_search.sql` adds the
-search indexes. Files are
+search indexes; `sql/005_quotas.sql` adds `quotas`. Files are
 numbered, re-runnable and applied in order. Events and deliveries cascade
 from their parents; a message keeps its history when its domain is removed.
 
@@ -393,7 +432,8 @@ One class, `MailError`, carrying a discriminated union — `invalid_address`,
 `header_injection`, `invalid_input`, `domain_not_verified`,
 `idempotency_conflict`, `not_found`, `invalid_state`, `transport`
 (with `retryable`), `dkim_key_required`, `mail_key_required` (with
-`purpose`), `signature_invalid`,
+`purpose`), `signature_invalid`, `quota_exceeded` (with `window`, `limit`,
+`retryAfterMs`),
 `webhook_url_forbidden` (with `url` and `reason`: not https, or a host that
 is or resolves to loopback / private / link-local / multicast). Narrow with
 `MailError.hasCode(e, 'domain_not_verified')`; never match the message.

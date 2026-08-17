@@ -35,6 +35,7 @@ describe('mail-kit/exports', () => {
       'forbiddenAddressReason',
       'clampLimit',
       'createUnsubscribe',
+      'createQuotas',
       'MailError',
     ]) {
       assert.equal(typeof (root as Record<string, unknown>)[name], 'function', name);

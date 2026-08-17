@@ -18,10 +18,12 @@ flowchart LR
         ev["events<br/>delivered · bounced · complained …"]
         sup["suppression<br/>tenant list + global list + per-list"]
         uns["unsubscribe<br/>HMAC token · RFC 8058 one-click"]
+        quo["quotas<br/>per-minute + per-day token buckets"]
         wh["webhooks<br/>signed · retried · replayable"]
         msg --> dom
         msg --> sup
         msg --> uns
+        msg --> quo
         uns --> sup
         ev --> sup
         ev --> wh
@@ -45,7 +47,7 @@ flowchart LR
 
     classDef own fill:#b91c1c,stroke:#7f1d1d,color:#ffffff;
     classDef host fill:#1e293b,stroke:#0f172a,color:#e2e8f0;
-    class dom,msg,ev,sup,uns,wh own;
+    class dom,msg,ev,sup,uns,quo,wh own;
     class db,tr,dns,http,call host;
 ```
 
