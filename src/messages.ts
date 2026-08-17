@@ -15,6 +15,7 @@ import { dkimSign } from './dkim.ts';
 import type { DomainsApi } from './domains.ts';
 import { MailError } from './errors.ts';
 import { type EventsApi, messageData } from './events.ts';
+import { mapLimit } from './limiter.ts';
 import { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from './limits.ts';
 import { assertAttachmentSafe, assertHeaderSafe, buildMimeDetailed, newMessageId } from './mime.ts';
 import type { QuotasApi } from './quotas.ts';
@@ -28,6 +29,7 @@ import type {
   MailTransport,
   Message,
   MessageStatus,
+  SendBatchOptions,
   SendInput,
   SendingDomain,
   SendOptions,
@@ -95,11 +97,13 @@ export interface SearchResult {
 
 export interface MessagesApi {
   send(tenantId: TenantId, input: SendInput, opts?: SendOptions): Promise<Message>;
-  /** Independent sends; one failing does not stop the rest. */
+  /** Independent sends, up to `config.batchConcurrency` (default 8) in
+   *  flight at once; results in input order; one failing does not stop the
+   *  rest. Anything but a `MailError` from a send rejects the whole call. */
   sendBatch(
     tenantId: TenantId,
     inputs: readonly SendInput[],
-    opts?: SendOptions,
+    opts?: SendBatchOptions,
   ): Promise<Array<{ ok: true; message: Message } | { ok: false; error: MailError }>>;
   get(tenantId: TenantId, id: string): Promise<Message | null>;
   list(tenantId: TenantId, opts?: ListMessagesOptions): Promise<Message[]>;
@@ -131,6 +135,9 @@ export const SEND_RETRY_SCHEDULE_S = [30, 120, 600, 1800, 3600];
 
 /** How long a claimed row is invisible to other workers before it is retried. */
 const LEASE_S = 90;
+
+/** `sendBatch` in-flight sends when neither the config nor the call says. */
+export const DEFAULT_BATCH_CONCURRENCY = 8;
 
 interface StoredAddress {
   email: string;
@@ -557,16 +564,18 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
     },
 
     async sendBatch(tenantId, inputs, o) {
-      const out: Array<{ ok: true; message: Message } | { ok: false; error: MailError }> = [];
-      for (const input of inputs) {
+      const width = o?.concurrency ?? config.batchConcurrency ?? DEFAULT_BATCH_CONCURRENCY;
+      if (!Number.isFinite(width) || width < 1)
+        throw new MailError({ code: 'invalid_input', reason: 'batch concurrency must be at least 1' });
+      const sendOpts: SendOptions | undefined = o ? { defer: o.defer } : undefined;
+      return mapLimit(inputs, width, async (input) => {
         try {
-          out.push({ ok: true, message: await api.send(tenantId, input, o) });
+          return { ok: true as const, message: await api.send(tenantId, input, sendOpts) };
         } catch (error) {
-          if (MailError.is(error)) out.push({ ok: false, error });
-          else throw error;
+          if (MailError.is(error)) return { ok: false as const, error };
+          throw error;
         }
-      }
-      return out;
+      });
     },
 
     async get(tenantId, id) {

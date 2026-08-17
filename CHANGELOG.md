@@ -7,6 +7,9 @@ All notable changes to `@quxkit/mail-kit` are recorded here. The format is
 ## [Unreleased]
 
 ### Added
+- `sendBatch` runs with a concurrency cap (`config.batchConcurrency`,
+  default 8, or `SendBatchOptions.concurrency`), results in input order;
+  `mapLimit` and `DEFAULT_BATCH_CONCURRENCY` exported.
 - Per-tenant send quotas: `mail.quotas.set/get/consume` (`createQuotas`,
   `QuotaLimits`, `Quota`, `ConsumeResult`), `MailConfig.quotas` default,
   `send()` → typed `quota_exceeded { tenantId, window, limit, retryAfterMs }`

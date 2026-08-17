@@ -120,6 +120,8 @@ export interface MailConfig {
    * bucket is empty; the message row is not written.
    */
   quotas?: { perMinute?: number | null; perDay?: number | null };
+  /** How many sends `sendBatch` keeps in flight at once. Default 8. */
+  batchConcurrency?: number;
 }
 
 // --- addresses and messages -------------------------------------------------
@@ -224,6 +226,11 @@ export interface SendOptions {
   /** Store the message as queued and return without delivering. A worker
    *  running `deliverPending` picks it up. Default false: deliver inline. */
   defer?: boolean;
+}
+
+export interface SendBatchOptions extends SendOptions {
+  /** Sends in flight at once for this batch; overrides `config.batchConcurrency`. */
+  concurrency?: number;
 }
 
 // --- domains ----------------------------------------------------------------
