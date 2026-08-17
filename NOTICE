@@ -1,0 +1,10 @@
+mail-kit
+Copyright 2026 BRETT
+
+This product includes software developed as part of the QuxKit family.
+Licensed under the Apache License, Version 2.0.
+
+The MIME builder, DKIM signer, SMTP client and SigV4 request signer are
+original implementations written against RFC 5322, RFC 2045/2047, RFC 6376,
+RFC 5321/4954 and the AWS Signature Version 4 specification respectively.
+No provider SDK is bundled.
