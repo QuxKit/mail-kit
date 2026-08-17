@@ -1,0 +1,85 @@
+// A sending domain, a send, a delivery event and a webhook — end to end,
+// against a real Postgres, with nothing leaving the machine.
+//
+//   createdb mail_kit_example
+//   psql -v ON_ERROR_STOP=1 -d mail_kit_example -f ../../sql/001_mail.sql
+//   psql -v ON_ERROR_STOP=1 -d mail_kit_example -f ../../sql/002_hardening.sql
+//   pnpm install && pnpm start
+
+import { createMail } from '@quxkit/mail-kit';
+import { memoryTransport } from '@quxkit/mail-kit/memory';
+import { pgExecutor } from '@quxkit/mail-kit/pg';
+import pg from 'pg';
+
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL ?? 'postgres://localhost:5432/mail_kit_example',
+});
+
+const transport = memoryTransport({ manageDomains: true });
+const posted: string[] = [];
+
+const mail = createMail({
+  db: pgExecutor(pool),
+  transport,
+  // Dev only: this example verifies "DNS" by asking the memory transport, and
+  // posts webhooks to a fetch that just records them.
+  dns: {
+    resolveTxt: async () => ['v=spf1 include:example ~all', 'v=DMARC1; p=none;'],
+    resolveCname: async (name) => [`${name.split('.')[0]}.dkim.example`],
+    resolveMx: async () => [{ exchange: 'feedback.example', priority: 10 }],
+    lookup: async () => ['203.0.113.10'],
+  },
+  fetch: async (url, init) => {
+    posted.push(`${init.method} ${url} ${init.headers['webhook-signature']}`);
+    return { status: 200, headers: { get: () => null }, text: async () => '' };
+  },
+});
+
+const tenantId = 'acme';
+
+// 1. a sending domain: publish the checklist, then verify
+const domain = await mail.domains.add(tenantId, { name: 'example.com' });
+console.log(
+  'records to publish:',
+  domain.records.map((r) => `${r.type} ${r.name}`),
+);
+const verified = await mail.domains.verify(tenantId, domain.id);
+console.log('domain status:', verified.status);
+
+// 2. a webhook subscription
+const hook = await mail.webhooks.create(tenantId, { url: 'https://hooks.example/mail', events: ['email.delivered'] });
+console.log('webhook secret (shown once):', hook.secret);
+
+// 3. send
+const message = await mail.send(tenantId, {
+  from: 'Acme <hello@example.com>',
+  to: 'ada@example.org',
+  subject: 'Welcome',
+  text: 'Hello from mail-kit',
+  idempotencyKey: 'welcome-ada',
+});
+console.log('message:', message.status, message.providerMessageId);
+console.log(
+  'bytes sent:',
+  Buffer.from(await mail.render(tenantId, message.id))
+    .toString()
+    .split('\r\n')[0],
+);
+
+// 4. what came back
+await mail.events.record([
+  {
+    type: 'delivered',
+    providerMessageId: message.providerMessageId ?? '',
+    recipient: 'ada@example.org',
+    at: new Date(),
+  },
+]);
+console.log('status now:', (await mail.get(tenantId, message.id))?.status);
+
+// 5. the worker tick delivers the webhook
+await mail.tick();
+console.log('webhook posts:', posted);
+
+await mail.domains.remove(tenantId, domain.id);
+await pool.end();

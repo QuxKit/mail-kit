@@ -1,0 +1,16 @@
+{
+  "name": "mail-kit-example-quickstart",
+  "private": true,
+  "type": "module",
+  "description": "Runs @quxkit/mail-kit end to end against a local Postgres with the memory transport.",
+  "scripts": {
+    "start": "tsx index.ts"
+  },
+  "dependencies": {
+    "@quxkit/mail-kit": "link:../..",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

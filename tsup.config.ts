@@ -21,7 +21,7 @@ const shared: Options = {
 export default defineConfig([
   {
     ...shared,
-    entry: ['src/index.ts', 'src/ses.ts', 'src/smtp.ts', 'src/memory.ts'],
+    entry: ['src/index.ts', 'src/ses.ts', 'src/smtp.ts', 'src/memory.ts', 'src/pg.ts'],
     format: ['esm', 'cjs'],
     dts: true,
     clean: true,
