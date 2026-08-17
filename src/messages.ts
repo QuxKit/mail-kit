@@ -17,7 +17,13 @@ import { MailError } from './errors.ts';
 import { type EventsApi, messageData } from './events.ts';
 import { mapLimit } from './limiter.ts';
 import { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from './limits.ts';
-import { assertAttachmentSafe, assertHeaderSafe, buildMimeDetailed, newMessageId } from './mime.ts';
+import {
+  assertAttachmentSafe,
+  assertHeaderSafe,
+  assertInlineHasHtml,
+  buildMimeDetailed,
+  newMessageId,
+} from './mime.ts';
 import type { QuotasApi } from './quotas.ts';
 import type { SuppressionApi } from './suppression.ts';
 import type {
@@ -288,6 +294,7 @@ export function normaliseInput(input: SendInput): {
     throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
   for (const [k, v] of Object.entries(input.headers ?? {})) assertHeaderSafe(k, v);
   for (const a of input.attachments ?? []) assertAttachmentSafe(a);
+  assertInlineHasHtml(input.attachments, input.html);
   const tags: Record<string, string> = {};
   for (const [k, v] of Object.entries(input.tags ?? {})) {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(k) || !/^[A-Za-z0-9_-]{0,256}$/.test(v)) {

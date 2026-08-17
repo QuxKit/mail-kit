@@ -33,6 +33,7 @@ export { createMessages, DEFAULT_BATCH_CONCURRENCY, normaliseInput, SEND_RETRY_S
 export type { MimeInput } from './mime.ts';
 export {
   assertAttachmentSafe,
+  assertInlineHasHtml,
   buildMime,
   buildMimeDetailed,
   newMessageId,

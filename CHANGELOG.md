@@ -53,6 +53,12 @@ All notable changes to `@quxkit/mail-kit` are recorded here. The format is
   `CODEOWNERS`, `SECURITY.md`, `CONTRIBUTING.md`; Biome lint/format; c8
   coverage with thresholds; `REQUIRE_DB` for the test harness.
 
+### Fixed
+- A `cid:` (`contentId`) attachment on a message with no `html` part was
+  silently dropped; it is now refused with typed `inline_needs_html
+  { contentId }` at `send` (before any row) and in `buildMime`
+  (`assertInlineHasHtml` exported).
+
 ### Changed
 - `render()` returns exactly the bytes the transport was handed for a sent
   message (boundaries and DKIM signature stored at send time) instead of a

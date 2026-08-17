@@ -315,6 +315,7 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
       await bad({ headers: { 'X-Y': 'a\nb' } }, 'header_injection');
       await bad({ tags: { 'bad key!': 'v' } }, 'invalid_input');
       await bad({ to: Array.from({ length: 51 }, (_, i) => `r${i}@example.org`) }, 'invalid_input');
+      await bad({ attachments: [{ filename: 'l.png', content: 'UE5H', contentId: 'logo' }] }, 'inline_needs_html');
       assert.equal((await mail.list(T1)).length, before);
     });
 
