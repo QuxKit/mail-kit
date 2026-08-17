@@ -58,6 +58,38 @@ export interface ListMessagesOptions {
   before?: Date;
 }
 
+/** What `search` filters on. Every field is optional and they combine with AND. */
+export interface SearchQuery {
+  tenantId: TenantId;
+  /** A recipient in `To` (exact address, case-insensitive on the domain as
+   *  parsed; the local part as stored). */
+  to?: string;
+  /** Case-insensitive substring of the subject. */
+  subject?: string;
+  /** Every pair must be present on the message (`tags @> …`). */
+  tag?: Record<string, string>;
+  status?: MessageStatus | readonly MessageStatus[];
+  /** Bounds on `sentAt` — unsent messages never match when either is set. */
+  sentAfter?: Date;
+  sentBefore?: Date;
+  /** Bounds on `createdAt`. */
+  createdAfter?: Date;
+  createdBefore?: Date;
+}
+
+export interface SearchPage {
+  /** Page size; default 50, capped at `MAX_LIST_LIMIT` (200). */
+  limit?: number;
+  /** The `nextCursor` of the previous page. Opaque; `invalid_input` if not ours. */
+  cursor?: string | null;
+}
+
+export interface SearchResult {
+  messages: Message[];
+  /** Pass back as `cursor` for the next page; null when this was the last. */
+  nextCursor: string | null;
+}
+
 export interface MessagesApi {
   send(tenantId: TenantId, input: SendInput, opts?: SendOptions): Promise<Message>;
   /** Independent sends; one failing does not stop the rest. */
@@ -68,6 +100,9 @@ export interface MessagesApi {
   ): Promise<Array<{ ok: true; message: Message } | { ok: false; error: MailError }>>;
   get(tenantId: TenantId, id: string): Promise<Message | null>;
   list(tenantId: TenantId, opts?: ListMessagesOptions): Promise<Message[]>;
+  /** Filter by recipient, subject, tags, status and time; newest first,
+   *  keyset-paged by `(createdAt, id)` so a page is stable while rows arrive. */
+  search(query: SearchQuery, page?: SearchPage): Promise<SearchResult>;
   /** A queued or scheduled message will not be sent. */
   cancel(tenantId: TenantId, id: string): Promise<Message>;
   /** Move a scheduled message; `at` in the past means "now". */
@@ -181,6 +216,23 @@ const toMessage = (r: Row): Message => ({
   sentAt: r.sent_at,
   updatedAt: r.updated_at,
 });
+
+const encodeCursor = (createdAt: Date, id: string): string =>
+  Buffer.from(`${createdAt.toISOString()}|${id}`).toString('base64url');
+
+function decodeCursor(cursor: string): { createdAt: Date; id: string } {
+  const text = Buffer.from(cursor, 'base64url').toString('utf8');
+  const bar = text.indexOf('|');
+  const createdAt = new Date(text.slice(0, bar));
+  const id = text.slice(bar + 1);
+  if (bar <= 0 || Number.isNaN(createdAt.getTime()) || !/^[0-9a-f-]{36}$/.test(id)) {
+    throw new MailError({ code: 'invalid_input', reason: 'cursor is not one search returned' });
+  }
+  return { createdAt, id };
+}
+
+/** Escape a user string for `LIKE`: `%`, `_` and the escape char itself. */
+const likeContains = (s: string): string => `%${s.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
 const stored = (a: ParsedAddress): StoredAddress => ({ email: a.email, name: a.name });
 const parsed = (a: StoredAddress): ParsedAddress => ({
@@ -501,6 +553,48 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
         [tenantId, o?.status ?? null, o?.before ?? null, clampLimit(o?.limit, 50, MAX_LIST_LIMIT)],
       );
       return rows.map(toMessage);
+    },
+
+    async search(query, page) {
+      const limit = clampLimit(page?.limit, 50, MAX_LIST_LIMIT);
+      const after = page?.cursor ? decodeCursor(page.cursor) : null;
+      const statuses = query.status === undefined ? null : Array.isArray(query.status) ? query.status : [query.status];
+      const to = query.to === undefined ? null : parseAddress(query.to).email;
+      const rows = await db.query<Row>(
+        `SELECT ${COLUMNS} FROM mail.messages
+          WHERE tenant_id = $1
+            AND ($2::text IS NULL OR to_addresses @> ARRAY[$2::text])
+            AND ($3::text IS NULL OR subject ILIKE $3 ESCAPE '\\')
+            AND ($4::jsonb IS NULL OR tags @> $4::jsonb)
+            AND ($5::text[] IS NULL OR status = ANY($5::text[]))
+            AND ($6::timestamptz IS NULL OR sent_at >= $6)
+            AND ($7::timestamptz IS NULL OR sent_at < $7)
+            AND ($8::timestamptz IS NULL OR created_at >= $8)
+            AND ($9::timestamptz IS NULL OR created_at < $9)
+            AND ($10::timestamptz IS NULL OR (created_at, id) < ($10::timestamptz, $11::uuid))
+          ORDER BY created_at DESC, id DESC
+          LIMIT $12`,
+        [
+          query.tenantId,
+          to,
+          query.subject === undefined ? null : likeContains(query.subject),
+          query.tag === undefined ? null : JSON.stringify(query.tag),
+          statuses,
+          query.sentAfter ?? null,
+          query.sentBefore ?? null,
+          query.createdAfter ?? null,
+          query.createdBefore ?? null,
+          after?.createdAt ?? null,
+          after?.id ?? null,
+          limit + 1,
+        ],
+      );
+      const pageRows = rows.slice(0, limit);
+      const last = pageRows[pageRows.length - 1];
+      return {
+        messages: pageRows.map(toMessage),
+        nextCursor: rows.length > limit && last ? encodeCursor(last.created_at, last.id) : null,
+      };
     },
 
     async cancel(tenantId, id) {
