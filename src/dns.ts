@@ -33,5 +33,18 @@ export function nodeDnsResolver(servers?: string[]): DnsResolver {
       ),
     resolveCname: (name) => swallow(r.resolveCname(name), []),
     resolveMx: (name) => swallow(r.resolveMx(name), []),
+    lookup: (hostname) => nodeLookup(hostname),
   };
+}
+
+/** Every address for a hostname via the system resolver (`dns.lookup`, which
+ *  honours /etc/hosts — the same answer the HTTP client will get). */
+export async function nodeLookup(hostname: string): Promise<string[]> {
+  try {
+    const found = await dns.lookup(hostname, { all: true });
+    return found.map((a) => a.address);
+  } catch (error) {
+    if (notFound(error)) return [];
+    throw error;
+  }
 }

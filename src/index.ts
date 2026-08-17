@@ -8,7 +8,7 @@ export type { ParsedAddress } from './address.ts';
 export { normaliseDomain, parseAddress, parseAddressList, renderAddress } from './address.ts';
 export type { DkimKeyPair, DkimSignOptions, DkimVerifyResult } from './dkim.ts';
 export { DEFAULT_SIGNED_HEADERS, dkimSign, dkimTxtRecord, dkimVerify, generateDkimKey } from './dkim.ts';
-export { nodeDnsResolver } from './dns.ts';
+export { nodeDnsResolver, nodeLookup } from './dns.ts';
 export type { DomainsApi, DomainsOptions, LocalSigner } from './domains.ts';
 export { createDomains, recordSatisfied } from './domains.ts';
 export type { MailErrorCode, MailFailure } from './errors.ts';
@@ -21,6 +21,8 @@ export type { ListMessagesOptions, MessagesApi, MessagesOptions, StoredPayload }
 export { createMessages, normaliseInput, SEND_RETRY_SCHEDULE_S } from './messages.ts';
 export type { MimeInput } from './mime.ts';
 export { assertAttachmentSafe, buildMime, newMessageId, quotedPrintable, rfc5322Date } from './mime.ts';
+export type { HostResolver, UrlGuardOptions } from './ssrf.ts';
+export { assertWebhookUrlAllowed, forbiddenAddressReason } from './ssrf.ts';
 export type { AddSuppressionInput, SuppressionApi, SuppressionOptions } from './suppression.ts';
 export { createSuppression, normaliseForSuppression } from './suppression.ts';
 export type {

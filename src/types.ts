@@ -47,6 +47,9 @@ export interface FetchInit {
   headers: Record<string, string>;
   body?: string;
   signal?: AbortSignal;
+  /** Webhook posts are sent with `'error'`: a redirect is a failure, never
+   *  followed — a 3xx to an internal address must not get past the URL guard. */
+  redirect?: 'error' | 'follow' | 'manual';
 }
 
 export interface FetchResponse {
@@ -92,6 +95,13 @@ export interface MailConfig {
   maxAttempts?: number;
   /** Webhook deliveries are attempted this many times in total. Default 7. */
   webhookMaxAttempts?: number;
+  /**
+   * Permit `http:` webhook URLs. Default false: a webhook endpoint must be
+   * `https:`. For development against a local receiver only — and even then
+   * the host must not be loopback or private (`webhook_url_forbidden`), so
+   * point it at a tunnel, not at 127.0.0.1.
+   */
+  allowInsecureHttp?: boolean;
 }
 
 // --- addresses and messages -------------------------------------------------
@@ -253,6 +263,9 @@ export interface DnsResolver {
   resolveTxt(name: string): Promise<string[]>;
   resolveCname(name: string): Promise<string[]>;
   resolveMx(name: string): Promise<Array<{ exchange: string; priority: number }>>;
+  /** Hostname → every address (A + AAAA). Used by the webhook URL guard; when
+   *  absent, node's `dns.lookup` is used. */
+  lookup?(hostname: string): Promise<string[]>;
 }
 
 // --- transport (the seam) ---------------------------------------------------

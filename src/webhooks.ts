@@ -12,6 +12,7 @@
 
 import { hmacSha256, randomToken, safeEqual } from './crypto.ts';
 import { MailError } from './errors.ts';
+import { assertWebhookUrlAllowed, type HostResolver } from './ssrf.ts';
 import type {
   Clock,
   CreatedWebhook,
@@ -32,6 +33,14 @@ export interface WebhooksOptions {
   maxAttempts?: number;
   /** Per-request timeout. Default 10s. */
   timeoutMs?: number;
+  /**
+   * Resolves a webhook host to its addresses so loopback/private/link-local
+   * targets can be refused (`webhook_url_forbidden`) at `create` and again at
+   * delivery. Default: node's `dns.lookup`. Tests hand in a map.
+   */
+  resolve?: HostResolver;
+  /** Permit `http:` webhook URLs (development only). Default false. */
+  allowInsecureHttp?: boolean;
 }
 
 export interface CreateWebhookInput {
@@ -185,6 +194,8 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
   const clock: Clock = opts.clock ?? (() => new Date());
   const maxAttempts = opts.maxAttempts ?? RETRY_SCHEDULE_S.length + 1;
   const timeoutMs = opts.timeoutMs ?? 10_000;
+  const resolve: HostResolver = opts.resolve ?? lazyNodeLookup();
+  const guard = { resolve, allowInsecureHttp: opts.allowInsecureHttp ?? false };
 
   return {
     async create(tenantId, input) {
@@ -197,6 +208,7 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
       if (url.protocol !== 'https:' && url.protocol !== 'http:') {
         throw new MailError({ code: 'invalid_input', reason: 'webhook url must be http(s)' });
       }
+      await assertWebhookUrlAllowed(url, guard);
       const events = [...new Set(input.events)];
       for (const e of events) {
         if (!ALL_WEBHOOK_EVENTS.includes(e))
@@ -274,7 +286,7 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
           if (!row) return;
           const body = JSON.stringify(row.payload);
           const attempt = row.attempts + 1;
-          const result = await post(fetch, row.url ?? '', row.secret ?? '', row.id, body, now, timeoutMs);
+          const result = await guardedPost(fetch, guard, row.url ?? '', row.secret ?? '', row.id, body, now, timeoutMs);
           if (result.ok) {
             await tx.query(
               `UPDATE mail.webhook_deliveries
@@ -286,7 +298,7 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
             out.delivered += 1;
             return;
           }
-          if (attempt >= maxAttempts) {
+          if (result.permanent || attempt >= maxAttempts) {
             await tx.query(
               `UPDATE mail.webhook_deliveries
                   SET status = 'failed', attempts = $2, last_status_code = $3, last_error = $4, next_attempt_at = NULL
@@ -324,6 +336,38 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
   };
 }
 
+interface PostResult {
+  ok: boolean;
+  status: number | null;
+  error: string | null;
+  /** True when retrying cannot help (the URL is forbidden). */
+  permanent?: boolean;
+}
+
+/** Re-check the URL against the guard at delivery time, then post. A URL
+ *  that has become forbidden (DNS now answers a private address) is a
+ *  permanent failure; a resolver error is a retryable one. */
+async function guardedPost(
+  fetch: Fetch,
+  guard: { resolve: HostResolver; allowInsecureHttp: boolean },
+  url: string,
+  secret: string,
+  id: string,
+  body: string,
+  now: Date,
+  timeoutMs: number,
+): Promise<PostResult> {
+  try {
+    await assertWebhookUrlAllowed(new URL(url), guard);
+  } catch (error) {
+    if (MailError.hasCode(error, 'webhook_url_forbidden')) {
+      return { ok: false, status: null, error: `webhook_url_forbidden: ${error.failure.reason}`, permanent: true };
+    }
+    return { ok: false, status: null, error: error instanceof Error ? error.message : String(error) };
+  }
+  return post(fetch, url, secret, id, body, now, timeoutMs);
+}
+
 async function post(
   fetch: Fetch,
   url: string,
@@ -332,7 +376,7 @@ async function post(
   body: string,
   now: Date,
   timeoutMs: number,
-): Promise<{ ok: boolean; status: number | null; error: string | null }> {
+): Promise<PostResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -345,6 +389,7 @@ async function post(
       },
       body,
       signal: controller.signal,
+      redirect: 'error',
     });
     if (res.status >= 200 && res.status < 300) return { ok: true, status: res.status, error: null };
     return { ok: false, status: res.status, error: `HTTP ${res.status}` };
@@ -353,4 +398,13 @@ async function post(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Import node:dns only when the default resolver is actually used. */
+function lazyNodeLookup(): HostResolver {
+  let real: HostResolver | null = null;
+  return async (hostname) => {
+    if (!real) real = (await import('./dns.ts')).nodeLookup;
+    return real(hostname);
+  };
 }

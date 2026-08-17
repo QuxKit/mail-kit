@@ -22,6 +22,10 @@ export class FakeDns implements DnsResolver {
   txt = new Map<string, string[]>();
   cname = new Map<string, string[]>();
   mx = new Map<string, Array<{ exchange: string; priority: number }>>();
+  /** Hostname → addresses for the webhook URL guard. Unknown hosts resolve
+   *  to a TEST-NET address so ordinary test URLs are allowed; set an entry to
+   *  make a host resolve somewhere forbidden. */
+  a = new Map<string, string[]>();
   async resolveTxt(name: string) {
     return this.txt.get(name.toLowerCase()) ?? [];
   }
@@ -30,6 +34,9 @@ export class FakeDns implements DnsResolver {
   }
   async resolveMx(name: string) {
     return this.mx.get(name.toLowerCase()) ?? [];
+  }
+  async lookup(hostname: string) {
+    return this.a.get(hostname.toLowerCase()) ?? ['203.0.113.10'];
   }
   /** Publish every record in a domain's checklist, so verification passes. */
   publish(records: Array<{ type: string; name: string; value: string; priority?: number }>) {

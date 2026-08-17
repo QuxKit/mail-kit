@@ -44,6 +44,7 @@ export function createMail(opts: MailOptions): Mail {
   const clock: Clock = opts.clock ?? (() => new Date());
   const fetchImpl: Fetch = opts.fetch ?? ((url, init) => globalThis.fetch(url, init) as unknown as ReturnType<Fetch>);
   const dns = opts.dns ?? lazyNodeDns();
+  const dnsLookup = opts.dns?.lookup;
 
   const suppression = createSuppression({ db: opts.db, clock });
   const webhooks = createWebhooks({
@@ -52,6 +53,8 @@ export function createMail(opts: MailOptions): Mail {
     clock,
     logger: opts.logger,
     maxAttempts: config.webhookMaxAttempts,
+    resolve: dnsLookup ? dnsLookup.bind(opts.dns) : undefined,
+    allowInsecureHttp: config.allowInsecureHttp,
   });
   const events = createEvents({ db: opts.db, suppression, webhooks, clock, logger: opts.logger });
   const domains = createDomains({

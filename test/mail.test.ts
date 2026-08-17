@@ -596,5 +596,74 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
         MailError.hasCode(e, 'invalid_input'),
       );
     });
+
+    it('refuses webhook URLs that point inside: at create, and again at delivery', async () => {
+      const dns = new FakeDns();
+      dns.a.set('metadata.example', ['169.254.169.254']);
+      dns.a.set('flip.example', ['203.0.113.7']);
+      const guarded = createMail({ db: h.db, transport: memoryTransport(), fetch: fetch.fetch, clock, dns });
+      const T4 = 'tenant_ssrf';
+      const refused = (url: string) =>
+        assert.rejects(
+          guarded.webhooks.create(T4, { url, events: ['email.sent'] }),
+          (e: unknown) => MailError.hasCode(e, 'webhook_url_forbidden'),
+          url,
+        );
+      await refused('https://metadata.example/latest/meta-data/');
+      await refused('https://127.0.0.1:8080/hook');
+      await refused('https://[::1]/hook');
+      await refused('https://10.0.0.1/hook');
+      await refused('https://192.168.1.10/hook');
+      await refused('https://172.16.5.5/hook');
+      await refused('https://169.254.169.254/hook');
+      await refused('https://0.0.0.0/hook');
+      await refused('https://224.0.0.1/hook');
+      await refused('https://[fd00::1]/hook');
+      await refused('https://[fe80::1]/hook');
+      await refused('https://localhost/hook');
+      // http: needs the explicit dev switch — and even then, not to an internal host
+      await refused('http://hooks.example/hook');
+      const dev = createMail({
+        db: h.db,
+        transport: memoryTransport(),
+        fetch: fetch.fetch,
+        clock,
+        dns,
+        config: { allowInsecureHttp: true },
+      });
+      const devHook = await dev.webhooks.create(T4, { url: 'http://hooks.example/dev', events: ['email.sent'] });
+      assert.equal(devHook.url, 'http://hooks.example/dev');
+      await assert.rejects(
+        dev.webhooks.create(T4, { url: 'http://127.0.0.1/dev', events: ['email.sent'] }),
+        (e: unknown) => MailError.hasCode(e, 'webhook_url_forbidden'),
+      );
+      await dev.webhooks.remove(T4, devHook.id);
+      assert.deepEqual(await guarded.webhooks.list(T4), []);
+
+      // a host that was public at create time and points inside by delivery time
+      const hook = await guarded.webhooks.create(T4, { url: 'https://flip.example/hook', events: ['email.sent'] });
+      assert.equal(await guarded.webhooks.enqueue(T4, 'email.sent', { email_id: 'e-flip' }), 1);
+      dns.a.set('flip.example', ['10.0.0.9']);
+      const before = fetch.calls.length;
+      const r = await guarded.webhooks.deliverPending(50, now);
+      assert.deepEqual(r, { delivered: 0, failed: 1, retried: 0 }, 'permanent, not retried');
+      assert.equal(fetch.calls.length, before, 'nothing was posted');
+      const [d] = await guarded.webhooks.listDeliveries(T4);
+      assert.equal(d!.status, 'failed');
+      assert.match(d!.lastError!, /webhook_url_forbidden.*10\.0\.0\.9/);
+      await guarded.webhooks.remove(T4, hook.id);
+    });
+
+    it('posts with redirect: "error" so a 3xx cannot walk past the guard', async () => {
+      const T5 = 'tenant_redirect';
+      await mail.webhooks.create(T5, { url: 'https://hooks.example/r', events: ['email.sent'] });
+      await mail.webhooks.enqueue(T5, 'email.sent', {});
+      fetch.respondNext(302);
+      const r = await mail.webhooks.deliverPending(50, now);
+      assert.deepEqual(r, { delivered: 0, failed: 0, retried: 1 });
+      assert.equal(fetch.calls.at(-1)!.init.redirect, 'error');
+      const [d] = await mail.webhooks.listDeliveries(T5);
+      assert.equal(d!.lastStatusCode, 302);
+    });
   });
 });
