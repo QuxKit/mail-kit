@@ -145,16 +145,73 @@ function textPart(contentType: string, body: string): string {
   );
 }
 
+// RFC 2045 token: printable ASCII minus tspecials, space and controls.
+const TOKEN = "[!#$%&'*+.^_`|~0-9A-Za-z-]+";
+const CONTENT_TYPE = new RegExp(`^${TOKEN}/${TOKEN}(?:\\s*;\\s*${TOKEN}=(?:${TOKEN}|"[^"\\\\\\r\\n\\u0000]*"))*$`);
+// RFC 2231 attribute-char: what may stand unencoded in an extended parameter.
+const RFC2231_SAFE = /^[A-Za-z0-9!#$&+\-.^_`|~]$/;
+
+/**
+ * Refuse an attachment whose metadata cannot be written into a header
+ * without either breaking the header (CR/LF/NUL) or changing its meaning
+ * (a `contentType` that is not `type/subtype`, a `contentId` that is not a
+ * bare id). Called by `normaliseInput` before any row exists, and again by
+ * `buildMime`, which is public.
+ */
+export function assertAttachmentSafe(a: Attachment): void {
+  if (typeof a.filename !== 'string' || a.filename.length === 0 || a.filename.length > 255) {
+    throw new MailError({ code: 'invalid_input', reason: 'attachment filename must be 1-255 characters' });
+  }
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing control characters is the point
+  if (/[\r\n\u0000]/.test(a.filename)) throw new MailError({ code: 'header_injection', header: 'Content-Disposition' });
+  if (a.contentType !== undefined) {
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing control characters is the point
+    if (/[\r\n\u0000]/.test(a.contentType)) throw new MailError({ code: 'header_injection', header: 'Content-Type' });
+    if (!CONTENT_TYPE.test(a.contentType)) {
+      throw new MailError({
+        code: 'invalid_input',
+        reason: `attachment contentType ${JSON.stringify(a.contentType)} is not a type/subtype media type`,
+      });
+    }
+  }
+  if (a.contentId !== undefined) {
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing control characters is the point
+    if (/[\r\n\u0000]/.test(a.contentId)) throw new MailError({ code: 'header_injection', header: 'Content-ID' });
+    if (!/^[!-;=?-~]{1,200}$/.test(a.contentId)) {
+      throw new MailError({
+        code: 'invalid_input',
+        reason: `attachment contentId ${JSON.stringify(a.contentId)} must be printable ASCII without <, > or whitespace`,
+      });
+    }
+  }
+}
+
+/** RFC 2231 `filename*=UTF-8''...` value: percent-encode every byte that is
+ *  not an attribute-char (encodeURIComponent leaves `'()*` bare, which RFC
+ *  2231 does not allow). */
+function rfc2231Value(value: string): string {
+  let out = '';
+  for (const byte of Buffer.from(value, 'utf8')) {
+    const ch = String.fromCharCode(byte);
+    out += RFC2231_SAFE.test(ch) ? ch : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+  }
+  return `UTF-8''${out}`;
+}
+
 function attachmentPart(a: Attachment): string {
+  assertAttachmentSafe(a);
   const bytes = typeof a.content === 'string' ? Buffer.from(a.content, 'base64') : a.content;
   const type = a.contentType ?? 'application/octet-stream';
-  const filename = /[^\u0020-\u007e]/.test(a.filename)
-    ? `filename*=UTF-8''${encodeURIComponent(a.filename)}`
-    : `filename="${a.filename.replace(/(["\\])/g, '\\$1')}"`;
+  const ascii = !/[^\u0020-\u007e]/.test(a.filename);
+  const quoted = `"${a.filename.replace(/(["\\])/g, '\\$1')}"`;
+  // ASCII: a quoted-string in both places. Non-ASCII: RFC 2231 in
+  // Content-Disposition, and no `name=` at all rather than raw bytes.
+  const filename = ascii ? `filename=${quoted}` : `filename*=${rfc2231Value(a.filename)}`;
+  const name = ascii ? `; name=${quoted}` : '';
   const disposition = a.contentId ? 'inline' : 'attachment';
   const cid = a.contentId ? `Content-ID: <${a.contentId}>${CRLF}` : '';
   return (
-    `Content-Type: ${type}; name="${a.filename.replace(/(["\\])/g, '\\$1')}"${CRLF}` +
+    `Content-Type: ${type}${name}${CRLF}` +
     `Content-Transfer-Encoding: base64${CRLF}` +
     `Content-Disposition: ${disposition}; ${filename}${CRLF}` +
     cid +
@@ -177,6 +234,7 @@ export function buildMime(input: MimeInput): Uint8Array {
   if (input.to.length === 0)
     throw new MailError({ code: 'invalid_input', reason: 'a message needs at least one To recipient' });
   assertHeaderSafe('Subject', input.subject);
+  for (const a of input.attachments ?? []) assertAttachmentSafe(a);
 
   const headers: string[] = [];
   headers.push(fold('From', renderAddress(input.from)));

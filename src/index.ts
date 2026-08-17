@@ -20,7 +20,7 @@ export { createMail } from './instance.ts';
 export type { ListMessagesOptions, MessagesApi, MessagesOptions, StoredPayload } from './messages.ts';
 export { createMessages, normaliseInput, SEND_RETRY_SCHEDULE_S } from './messages.ts';
 export type { MimeInput } from './mime.ts';
-export { buildMime, newMessageId, quotedPrintable, rfc5322Date } from './mime.ts';
+export { assertAttachmentSafe, buildMime, newMessageId, quotedPrintable, rfc5322Date } from './mime.ts';
 export type { AddSuppressionInput, SuppressionApi, SuppressionOptions } from './suppression.ts';
 export { createSuppression, normaliseForSuppression } from './suppression.ts';
 export type {

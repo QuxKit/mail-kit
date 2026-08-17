@@ -117,6 +117,59 @@ describe('mail-kit/mime', () => {
     );
   });
 
+  it('refuses attachment metadata that would break or bend a header', () => {
+    const png = { content: Buffer.from('PNG'), contentType: 'image/png' };
+    const bad = (a: Record<string, unknown>, code: string) =>
+      assert.throws(
+        () => buildMime({ ...base, text: 'x', attachments: [{ filename: 'a.png', ...png, ...a } as never] }),
+        (e: unknown) => MailError.is(e) && e.code === code,
+        JSON.stringify(a),
+      );
+    // an injection attempt: a second header smuggled through the filename
+    bad({ filename: 'a.png"\r\nContent-Type: text/html\r\n\r\n<script>' }, 'header_injection');
+    bad({ filename: 'a\u0000.png' }, 'header_injection');
+    bad({ contentType: 'image/png\r\nX-Injected: 1' }, 'header_injection');
+    bad({ contentId: 'logo\r\nBcc: x@y' }, 'header_injection');
+    bad({ contentType: 'not a type' }, 'invalid_input');
+    bad({ contentType: 'image/png; charset' }, 'invalid_input');
+    bad({ contentType: 'image/' }, 'invalid_input');
+    bad({ contentId: '<logo>' }, 'invalid_input');
+    bad({ contentId: 'has space' }, 'invalid_input');
+    bad({ filename: '' }, 'invalid_input');
+    // parameters with a token or quoted-string value are fine
+    const ok = Buffer.from(
+      buildMime({
+        ...base,
+        text: 'x',
+        attachments: [{ filename: 'a.txt', content: Buffer.from('a'), contentType: 'text/plain; charset="utf-8"' }],
+      }),
+    ).toString();
+    assert.match(ok, /Content-Type: text\/plain; charset="utf-8"; name="a.txt"\r\n/);
+  });
+
+  it('encodes non-ASCII and quote-bearing filenames instead of writing them raw', () => {
+    const m = Buffer.from(
+      buildMime({
+        ...base,
+        text: 'x',
+        attachments: [
+          { filename: 'Rechnung Zoë (2026)*.pdf', content: Buffer.from('%PDF') },
+          { filename: 'say "hi".txt', content: Buffer.from('hi'), contentType: 'text/plain' },
+        ],
+      }),
+    ).toString();
+    assert.ok(
+      Buffer.from(m, 'utf8').every((b) => b < 0x80),
+      'no raw non-ASCII anywhere in the message',
+    );
+    // RFC 2231 in Content-Disposition, no name= at all
+    assert.match(m, /Content-Type: application\/octet-stream\r\nContent-Transfer-Encoding: base64\r\n/);
+    assert.match(m, /Content-Disposition: attachment; filename\*=UTF-8''Rechnung%20Zo%C3%AB%20%282026%29%2A.pdf\r\n/);
+    // ASCII with quotes: quoted and escaped in both places
+    assert.match(m, /Content-Type: text\/plain; name="say \\"hi\\".txt"\r\n/);
+    assert.match(m, /Content-Disposition: attachment; filename="say \\"hi\\".txt"\r\n/);
+  });
+
   it('formats the date per RFC 5322', () => {
     assert.equal(rfc5322Date(new Date('2026-08-16T12:00:05Z')), 'Sun, 16 Aug 2026 12:00:05 +0000');
   });

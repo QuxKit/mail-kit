@@ -15,7 +15,7 @@ import { dkimSign } from './dkim.ts';
 import type { DomainsApi } from './domains.ts';
 import { MailError } from './errors.ts';
 import { type EventsApi, messageData } from './events.ts';
-import { assertHeaderSafe, buildMime, newMessageId } from './mime.ts';
+import { assertAttachmentSafe, assertHeaderSafe, buildMime, newMessageId } from './mime.ts';
 import type { SuppressionApi } from './suppression.ts';
 import type {
   Attachment,
@@ -187,6 +187,7 @@ export function normaliseInput(input: SendInput): {
   if (!input.text && !input.html)
     throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
   for (const [k, v] of Object.entries(input.headers ?? {})) assertHeaderSafe(k, v);
+  for (const a of input.attachments ?? []) assertAttachmentSafe(a);
   const tags: Record<string, string> = {};
   for (const [k, v] of Object.entries(input.tags ?? {})) {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(k) || !/^[A-Za-z0-9_-]{0,256}$/.test(v)) {
