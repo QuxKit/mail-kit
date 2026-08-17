@@ -335,8 +335,9 @@ const certCache = new Map<string, string>();
 /**
  * Verify an SNS message's signature against Amazon's certificate. Refuses a
  * SigningCertURL that is not an https `sns.<region>.amazonaws.com` host — the
- * one check that turns "verified" from a formality into a fact. Throws
- * `MailError` (`signature_invalid`) on failure.
+ * one check that turns "verified" from a formality into a fact — and refuses
+ * any `SignatureVersion` other than `2` (RSA-SHA256). Throws `MailError`
+ * (`signature_invalid`) on failure.
  */
 export async function verifySnsMessage(message: SnsMessage, deps: { fetch: Fetch }): Promise<void> {
   const fail = (reason: string): never => {
@@ -350,6 +351,12 @@ export async function verifySnsMessage(message: SnsMessage, deps: { fetch: Fetch
   }
   if (certUrl.protocol !== 'https:' || !/^sns\.[a-z0-9-]+\.amazonaws\.com(\.cn)?$/.test(certUrl.hostname)) {
     return fail('SigningCertURL is not an SNS host');
+  }
+  // SignatureVersion 1 is RSA-SHA1. SNS has signed with SHA256 (version 2)
+  // since 2022 and lets a topic opt in; SHA1 is not accepted here, so a
+  // downgraded message is refused rather than verified with a weak hash.
+  if (message.SignatureVersion !== '2') {
+    return fail(`unsupported SignatureVersion ${JSON.stringify(message.SignatureVersion)} (only 2, RSA-SHA256)`);
   }
   const fields =
     message.Type === 'Notification'
@@ -366,12 +373,12 @@ export async function verifySnsMessage(message: SnsMessage, deps: { fetch: Fetch
     const res = await deps.fetch(certUrl.href, { method: 'GET', headers: {} });
     if (res.status !== 200) return fail(`could not fetch signing certificate (${res.status})`);
     cert = await res.text();
+    if (certCache.size >= 16) certCache.clear();
     certCache.set(certUrl.href, cert);
   }
-  const algorithm = message.SignatureVersion === '2' ? 'RSA-SHA256' : 'RSA-SHA1';
   let ok = false;
   try {
-    ok = createVerify(algorithm).update(canonical, 'utf8').verify(cert, message.Signature, 'base64');
+    ok = createVerify('RSA-SHA256').update(canonical, 'utf8').verify(cert, message.Signature, 'base64');
   } catch (error) {
     return fail(`verify failed: ${error instanceof Error ? error.message : String(error)}`);
   }

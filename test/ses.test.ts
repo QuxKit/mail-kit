@@ -294,14 +294,14 @@ describe('mail-kit/ses: events', () => {
       TopicArn: 'arn:aws:sns:us-east-1:123:ses',
       Message: '{"eventType":"Send"}',
       Timestamp: '2026-08-16T12:00:00.000Z',
-      SignatureVersion: '1',
+      SignatureVersion: '2',
       Signature: '',
       SigningCertURL: 'https://sns.us-east-1.amazonaws.com/SimpleNotificationService-abc.pem',
     };
     const canonical = ['Message', 'MessageId', 'Timestamp', 'TopicArn', 'Type']
       .map((f) => `${f}\n${(message as unknown as Record<string, string>)[f]}\n`)
       .join('');
-    message.Signature = createSign('RSA-SHA1').update(canonical).sign(privateKey, 'base64');
+    message.Signature = createSign('RSA-SHA256').update(canonical).sign(privateKey, 'base64');
     const fetch = async () => ({ status: 200, headers: { get: () => null }, text: async () => pem });
 
     await verifySnsMessage(message, { fetch });
@@ -316,5 +316,44 @@ describe('mail-kit/ses: events', () => {
       verifySnsMessage({ ...message, SigningCertURL: 'http://sns.us-east-1.amazonaws.com/x.pem' }, { fetch }),
       (e: unknown) => MailError.hasCode(e, 'signature_invalid'),
     );
+  });
+
+  it('refuses SignatureVersion 1 (SHA1) even when the SHA1 signature would verify', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const pem = publicKey.export({ type: 'spki', format: 'pem' }) as string;
+    const message: SnsMessage = {
+      Type: 'Notification',
+      MessageId: 'id-2',
+      TopicArn: 'arn:aws:sns:us-east-1:123:ses',
+      Message: '{"eventType":"Send"}',
+      Timestamp: '2026-08-16T12:00:00.000Z',
+      SignatureVersion: '1',
+      Signature: '',
+      SigningCertURL: 'https://sns.us-east-1.amazonaws.com/SimpleNotificationService-v1.pem',
+    };
+    const canonical = ['Message', 'MessageId', 'Timestamp', 'TopicArn', 'Type']
+      .map((f) => `${f}\n${(message as unknown as Record<string, string>)[f]}\n`)
+      .join('');
+    message.Signature = createSign('RSA-SHA1').update(canonical).sign(privateKey, 'base64');
+    const fetch = async () => ({ status: 200, headers: { get: () => null }, text: async () => pem });
+    await assert.rejects(
+      verifySnsMessage(message, { fetch }),
+      (e: unknown) => MailError.hasCode(e, 'signature_invalid') && /SignatureVersion/.test(e.failure.reason),
+    );
+    // and a made-up version is refused too, before any certificate fetch
+    let fetched = false;
+    await assert.rejects(
+      verifySnsMessage(
+        { ...message, SignatureVersion: '3' },
+        {
+          fetch: async () => {
+            fetched = true;
+            return { status: 200, headers: { get: () => null }, text: async () => pem };
+          },
+        },
+      ),
+      (e: unknown) => MailError.hasCode(e, 'signature_invalid'),
+    );
+    assert.equal(fetched, false, 'refused before any certificate is fetched');
   });
 });
