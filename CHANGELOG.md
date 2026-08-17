@@ -7,6 +7,9 @@ All notable changes to `@quxkit/mail-kit` are recorded here. The format is
 ## [Unreleased]
 
 ### Added
+- Renderer seam: `Renderer<T>`, `RenderedContent`, `RenderedEnvelope`;
+  `mail.sendRendered(tenantId, renderer, input, envelope, opts?)`;
+  `docs/TEMPLATES.md` (plain function, react-email, mjml recipes).
 - `sendBatch` runs with a concurrency cap (`config.batchConcurrency`,
   default 8, or `SendBatchOptions.concurrency`), results in input order;
   `mapLimit` and `DEFAULT_BATCH_CONCURRENCY` exported.
