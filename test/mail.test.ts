@@ -9,6 +9,7 @@ import { after, before, describe, it } from 'node:test';
 import { dkimVerify } from '../src/dkim.ts';
 import { MailError } from '../src/errors.ts';
 import { createMail, type Mail } from '../src/instance.ts';
+import { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from '../src/limits.ts';
 import { type MemoryTransport, memoryTransport } from '../src/transports/memory.ts';
 import { parseSesEvents } from '../src/transports/ses.ts';
 import type { SqlExecutor } from '../src/types.ts';
@@ -467,6 +468,38 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
       assert.equal(out[0]!.ok, true);
       assert.equal(out[1]!.ok, false);
       assert.equal((out[1] as { error: MailError }).error.code, 'invalid_address');
+    });
+
+    it('caps list limits at MAX_LIST_LIMIT and worker batches at MAX_BATCH', async () => {
+      assert.equal(MAX_LIST_LIMIT, 200);
+      assert.equal(MAX_BATCH, 500);
+      // 220 suppressions for a scratch tenant; a list asking for 10,000 gets 200
+      const T7 = 'tenant_caps';
+      for (let i = 0; i < 220; i += 1)
+        await mail.suppression.add(T7, { address: `u${i}@caps.example`, reason: 'manual' });
+      assert.equal((await mail.suppression.list(T7, { limit: 10_000 })).length, 200);
+      assert.equal((await mail.suppression.list(T7, { limit: 5 })).length, 5);
+      assert.equal((await mail.suppression.list(T7, { limit: 0 })).length, 1, 'clamped up to 1');
+      assert.equal((await mail.suppression.list(T7, { limit: Number.NaN })).length, 100, 'default when not a number');
+      assert.equal((await mail.list(T1, { limit: 100_000 })).length <= 200, true);
+      assert.equal((await mail.webhooks.listDeliveries(T1, { limit: 100_000 })).length <= 200, true);
+      // a batch of 10,000 claims at most 500: with 3 queued rows, all 3 — the
+      // SQL parameter is what is bounded, so assert through the clamp itself
+      assert.equal(clampLimit(10_000, 50, MAX_BATCH), 500);
+      assert.equal(clampLimit(undefined, 50, MAX_BATCH), 50);
+      assert.equal(clampLimit(-3, 50, MAX_BATCH), 1);
+      assert.equal(clampLimit(2.9, 50, MAX_BATCH), 2);
+      const queued = await Promise.all(
+        [1, 2, 3].map((i) =>
+          mail.send(
+            T1,
+            { from: 'ada@app.example', to: 'bob@example.org', subject: `q${i}`, text: 't' },
+            { defer: true },
+          ),
+        ),
+      );
+      assert.deepEqual(await mail.deliverPending(10_000, now), { sent: 3, failed: 0, retried: 0 });
+      for (const q of queued) assert.equal((await mail.get(T1, q.id))!.status, 'sent');
     });
 
     it('lists with status filter and paging', async () => {

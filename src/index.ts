@@ -17,6 +17,7 @@ export type { EventsApi, EventsOptions } from './events.ts';
 export { createEvents, messageData, nextStatus } from './events.ts';
 export type { Mail, MailOptions } from './instance.ts';
 export { createMail } from './instance.ts';
+export { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from './limits.ts';
 export type { ListMessagesOptions, MessagesApi, MessagesOptions, Rendering, StoredPayload } from './messages.ts';
 export { createMessages, normaliseInput, SEND_RETRY_SCHEDULE_S } from './messages.ts';
 export type { MimeInput } from './mime.ts';

@@ -7,6 +7,7 @@
 // A send is checked against both. Bounces and complaints reach here from
 // `recordEvents`, automatically; a host never has to remember.
 
+import { clampLimit, MAX_LIST_LIMIT } from './limits.ts';
 import type { Clock, SqlExecutor, Suppression, SuppressionReason, TenantId } from './types.ts';
 
 export interface SuppressionOptions {
@@ -25,6 +26,7 @@ export interface SuppressionApi {
    *  Idempotent: an address already present keeps its original reason. */
   add(tenantId: TenantId | null, input: AddSuppressionInput): Promise<Suppression>;
   remove(tenantId: TenantId | null, address: string): Promise<boolean>;
+  /** Newest first; `limit` defaults to 100, capped at `MAX_LIST_LIMIT`. */
   list(tenantId: TenantId | null, opts?: { limit?: number }): Promise<Suppression[]>;
   /** Which of `addresses` may not be sent to by `tenantId` — its own list and
    *  the global list, in one query. */
@@ -82,7 +84,7 @@ export function createSuppression(opts: SuppressionOptions): SuppressionApi {
         `SELECT id, tenant_id, address, reason, detail, created_at FROM mail.suppressions
           WHERE ($1::text IS NULL AND tenant_id IS NULL OR tenant_id = $1)
           ORDER BY created_at DESC LIMIT $2`,
-        [tenantId, o?.limit ?? 100],
+        [tenantId, clampLimit(o?.limit, 100, MAX_LIST_LIMIT)],
       );
       return rows.map(toSuppression);
     },

@@ -12,6 +12,7 @@
 
 import { hmacSha256, randomToken, safeEqual } from './crypto.ts';
 import { MailError } from './errors.ts';
+import { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from './limits.ts';
 import { assertWebhookUrlAllowed, type HostResolver } from './ssrf.ts';
 import type {
   Clock,
@@ -62,10 +63,12 @@ export interface WebhooksApi {
   /** Queue one delivery per enabled subscription of `tenantId` that wants
    *  `type`. Returns how many were queued. */
   enqueue(tenantId: TenantId, type: WebhookEventType, data: Record<string, unknown>, at?: Date): Promise<number>;
-  /** Attempt every due delivery, up to `limit`. Safe to run concurrently —
+  /** Attempt every due delivery, up to `limit` (default 50, capped at
+   *  `MAX_BATCH`). Safe to run concurrently —
    *  rows are claimed (`FOR UPDATE SKIP LOCKED`) and leased in one committed
    *  statement, then posted with no lock held. */
   deliverPending(limit?: number, now?: Date): Promise<{ delivered: number; failed: number; retried: number }>;
+  /** Newest first; `limit` defaults to 100, capped at `MAX_LIST_LIMIT`. */
   listDeliveries(tenantId: TenantId, opts?: { limit?: number; subscriptionId?: string }): Promise<WebhookDelivery[]>;
 }
 
@@ -305,7 +308,7 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
           RETURNING d.id, d.subscription_id, d.tenant_id, d.event_type, d.payload, d.status, d.attempts,
                     d.last_status_code, d.last_error, d.next_attempt_at, d.created_at, d.delivered_at,
                     s.url, s.secret`,
-        [now, new Date(now.getTime() + LEASE_S * 1000), limit],
+        [now, new Date(now.getTime() + LEASE_S * 1000), clampLimit(limit, 50, MAX_BATCH)],
       );
       for (const row of claimed) {
         const body = JSON.stringify(row.payload);
@@ -352,7 +355,7 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
            FROM mail.webhook_deliveries
           WHERE tenant_id = $1 AND ($3::uuid IS NULL OR subscription_id = $3)
           ORDER BY created_at DESC LIMIT $2`,
-        [tenantId, o?.limit ?? 100, o?.subscriptionId ?? null],
+        [tenantId, clampLimit(o?.limit, 100, MAX_LIST_LIMIT), o?.subscriptionId ?? null],
       );
       return rows.map(toDelivery);
     },

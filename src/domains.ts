@@ -16,6 +16,7 @@ import { normaliseDomain } from './address.ts';
 import { keyFromHex, seal, unseal } from './crypto.ts';
 import { dkimTxtRecord, generateDkimKey } from './dkim.ts';
 import { MailError } from './errors.ts';
+import { clampLimit, MAX_BATCH } from './limits.ts';
 import type {
   AddDomainInput,
   Clock,
@@ -314,7 +315,7 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
         `SELECT ${COLUMNS} FROM mail.domains
           WHERE status = 'pending' AND (last_checked_at IS NULL OR last_checked_at <= $1)
           ORDER BY last_checked_at NULLS FIRST LIMIT $2`,
-        [cutoff, o?.limit ?? 50],
+        [cutoff, clampLimit(o?.limit, 50, MAX_BATCH)],
       );
       const out: SendingDomain[] = [];
       for (const r of rows) out.push(await applyCheck(toDomain(r)));

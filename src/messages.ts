@@ -15,6 +15,7 @@ import { dkimSign } from './dkim.ts';
 import type { DomainsApi } from './domains.ts';
 import { MailError } from './errors.ts';
 import { type EventsApi, messageData } from './events.ts';
+import { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from './limits.ts';
 import { assertAttachmentSafe, assertHeaderSafe, buildMimeDetailed, newMessageId } from './mime.ts';
 import type { SuppressionApi } from './suppression.ts';
 import type {
@@ -48,6 +49,7 @@ export interface MessagesOptions {
 
 export interface ListMessagesOptions {
   status?: MessageStatus;
+  /** Page size; default 50, capped at `MAX_LIST_LIMIT` (200). */
   limit?: number;
   /** Page: rows created before this instant. */
   before?: Date;
@@ -71,7 +73,8 @@ export interface MessagesApi {
    *  `render` builds from, exposed for a dashboard's detail view. */
   payload(tenantId: TenantId, id: string): Promise<StoredPayload | null>;
   /** Deliver everything due — queued, scheduled, or waiting on a retry. What a
-   *  worker calls in a loop. Safe to run from several processes. */
+   *  worker calls in a loop. Safe to run from several processes. `limit`
+   *  defaults to 50 and is capped at `MAX_BATCH` (500). */
   deliverPending(limit?: number, now?: Date): Promise<{ sent: number; failed: number; retried: number }>;
   /**
    * The bytes for a stored message (dashboard "view source"). For a sent
@@ -475,7 +478,7 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
         `SELECT ${COLUMNS} FROM mail.messages
           WHERE tenant_id = $1 AND ($2::text IS NULL OR status = $2) AND ($3::timestamptz IS NULL OR created_at < $3)
           ORDER BY created_at DESC LIMIT $4`,
-        [tenantId, o?.status ?? null, o?.before ?? null, o?.limit ?? 50],
+        [tenantId, o?.status ?? null, o?.before ?? null, clampLimit(o?.limit, 50, MAX_LIST_LIMIT)],
       );
       return rows.map(toMessage);
     },
@@ -524,7 +527,7 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
              WHERE status IN ('queued', 'scheduled') AND next_attempt_at <= $1
              ORDER BY next_attempt_at LIMIT $3 FOR UPDATE SKIP LOCKED)
           RETURNING ${COLUMNS}`,
-        [now, new Date(now.getTime() + LEASE_S * 1000), limit],
+        [now, new Date(now.getTime() + LEASE_S * 1000), clampLimit(limit, 50, MAX_BATCH)],
       );
       for (const row of claimed) {
         const r = await attempt(row, now);
