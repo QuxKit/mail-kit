@@ -1,0 +1,10 @@
+{
+  "all": true,
+  "src": ["src"],
+  "include": ["src/**/*.ts"],
+  "exclude": ["test/**", "**/*.test.ts", "dist/**", "examples/**"],
+  "reporter": ["text", "lcov"],
+  "reports-dir": "coverage",
+  "exclude-after-remap": true,
+  "check-coverage": false
+}
