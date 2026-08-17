@@ -63,13 +63,18 @@ export interface WebhooksApi {
    *  `type`. Returns how many were queued. */
   enqueue(tenantId: TenantId, type: WebhookEventType, data: Record<string, unknown>, at?: Date): Promise<number>;
   /** Attempt every due delivery, up to `limit`. Safe to run concurrently —
-   *  rows are claimed with `FOR UPDATE SKIP LOCKED`. */
+   *  rows are claimed (`FOR UPDATE SKIP LOCKED`) and leased in one committed
+   *  statement, then posted with no lock held. */
   deliverPending(limit?: number, now?: Date): Promise<{ delivered: number; failed: number; retried: number }>;
   listDeliveries(tenantId: TenantId, opts?: { limit?: number; subscriptionId?: string }): Promise<WebhookDelivery[]>;
 }
 
 /** Retry schedule after the first attempt: 5s, 5m, 30m, 2h, 5h, 10h. */
 export const RETRY_SCHEDULE_S = [5, 300, 1800, 7200, 18000, 36000];
+
+/** How long a claimed delivery is invisible to other workers before it is
+ *  retried; covers the request timeout with room to record the outcome. */
+const LEASE_S = 90;
 
 /** The header set the receiver checks. */
 export function signWebhook(secret: string, id: string, timestamp: Date, body: string): Record<string, string> {
@@ -281,58 +286,61 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
 
     async deliverPending(limit = 50, now = clock()) {
       const out = { delivered: 0, failed: 0, retried: 0 };
-      // Claim a batch of ids, then process each in its own transaction so a
-      // slow endpoint holds one row lock, not the batch.
-      const due = await db.query<{ id: string }>(
-        `SELECT id FROM mail.webhook_deliveries
-          WHERE status = 'pending' AND next_attempt_at <= $1
-          ORDER BY next_attempt_at LIMIT $2`,
-        [now, limit],
+      // Claim, then commit, then post. The claim leases each due row (its
+      // next_attempt_at moves past the lease) in one autocommitted statement,
+      // so no row lock is held while an endpoint takes its time to answer;
+      // the outcome is recorded afterwards. A worker that dies mid-post
+      // leaves the row to be retried when the lease lapses — at-least-once,
+      // and the receiver has webhook-id to de-duplicate on.
+      const claimed = await db.query<DeliveryRow>(
+        `UPDATE mail.webhook_deliveries d
+            SET next_attempt_at = $2
+           FROM mail.webhook_subscriptions s
+          WHERE d.id IN (
+                  SELECT id FROM mail.webhook_deliveries
+                   WHERE status = 'pending' AND next_attempt_at <= $1
+                   ORDER BY next_attempt_at LIMIT $3
+                   FOR UPDATE SKIP LOCKED)
+            AND s.id = d.subscription_id
+          RETURNING d.id, d.subscription_id, d.tenant_id, d.event_type, d.payload, d.status, d.attempts,
+                    d.last_status_code, d.last_error, d.next_attempt_at, d.created_at, d.delivered_at,
+                    s.url, s.secret`,
+        [now, new Date(now.getTime() + LEASE_S * 1000), limit],
       );
-      for (const { id } of due) {
-        await db.transaction(async (tx) => {
-          const rows = await tx.query<DeliveryRow>(
-            `SELECT d.*, s.url, s.secret
-               FROM mail.webhook_deliveries d JOIN mail.webhook_subscriptions s ON s.id = d.subscription_id
-              WHERE d.id = $1 AND d.status = 'pending' FOR UPDATE OF d SKIP LOCKED`,
-            [id],
-          );
-          const row = rows[0];
-          if (!row) return;
-          const body = JSON.stringify(row.payload);
-          const attempt = row.attempts + 1;
-          const result = await guardedPost(fetch, guard, row.url ?? '', row.secret ?? '', row.id, body, now, timeoutMs);
-          if (result.ok) {
-            await tx.query(
-              `UPDATE mail.webhook_deliveries
-                  SET status = 'delivered', attempts = $2, last_status_code = $3, last_error = NULL,
-                      next_attempt_at = NULL, delivered_at = $4
-                WHERE id = $1`,
-              [row.id, attempt, result.status, now],
-            );
-            out.delivered += 1;
-            return;
-          }
-          if (result.permanent || attempt >= maxAttempts) {
-            await tx.query(
-              `UPDATE mail.webhook_deliveries
-                  SET status = 'failed', attempts = $2, last_status_code = $3, last_error = $4, next_attempt_at = NULL
-                WHERE id = $1`,
-              [row.id, attempt, result.status, result.error],
-            );
-            out.failed += 1;
-            opts.logger?.warn('webhook delivery failed permanently', { id: row.id, url: row.url, attempts: attempt });
-            return;
-          }
-          const delay = RETRY_SCHEDULE_S[Math.min(attempt - 1, RETRY_SCHEDULE_S.length - 1)] ?? 0;
-          await tx.query(
+      for (const row of claimed) {
+        const body = JSON.stringify(row.payload);
+        const attempt = row.attempts + 1;
+        const result = await guardedPost(fetch, guard, row.url ?? '', row.secret ?? '', row.id, body, now, timeoutMs);
+        if (result.ok) {
+          await db.query(
             `UPDATE mail.webhook_deliveries
-                SET attempts = $2, last_status_code = $3, last_error = $4, next_attempt_at = $5
+                SET status = 'delivered', attempts = $2, last_status_code = $3, last_error = NULL,
+                    next_attempt_at = NULL, delivered_at = $4
               WHERE id = $1`,
-            [row.id, attempt, result.status, result.error, new Date(now.getTime() + delay * 1000)],
+            [row.id, attempt, result.status, now],
           );
-          out.retried += 1;
-        });
+          out.delivered += 1;
+          continue;
+        }
+        if (result.permanent || attempt >= maxAttempts) {
+          await db.query(
+            `UPDATE mail.webhook_deliveries
+                SET status = 'failed', attempts = $2, last_status_code = $3, last_error = $4, next_attempt_at = NULL
+              WHERE id = $1`,
+            [row.id, attempt, result.status, result.error],
+          );
+          out.failed += 1;
+          opts.logger?.warn('webhook delivery failed permanently', { id: row.id, url: row.url, attempts: attempt });
+          continue;
+        }
+        const delay = RETRY_SCHEDULE_S[Math.min(attempt - 1, RETRY_SCHEDULE_S.length - 1)] ?? 0;
+        await db.query(
+          `UPDATE mail.webhook_deliveries
+              SET attempts = $2, last_status_code = $3, last_error = $4, next_attempt_at = $5
+            WHERE id = $1`,
+          [row.id, attempt, result.status, result.error, new Date(now.getTime() + delay * 1000)],
+        );
+        out.retried += 1;
       }
       return out;
     },

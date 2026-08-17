@@ -750,6 +750,57 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
       await guarded.webhooks.remove(T4, hook.id);
     });
 
+    it('does not hold a row lock while the endpoint is slow: the claim commits before the POST', async () => {
+      const T6 = 'tenant_slow';
+      await mail.webhooks.deliverPending(500, now); // drain
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      let entered: () => void = () => {};
+      const inFlight = new Promise<void>((r) => {
+        entered = r;
+      });
+      const slow = createMail({
+        db: h.db,
+        transport: memoryTransport(),
+        clock,
+        dns: new FakeDns(),
+        fetch: async () => {
+          entered();
+          await gate;
+          return { status: 200, headers: { get: () => null }, text: async () => '' };
+        },
+      });
+      await slow.webhooks.create(T6, { url: 'https://hooks.example/slow', events: ['email.sent'] });
+      await slow.webhooks.enqueue(T6, 'email.sent', { email_id: 'slow-1' });
+      const [pending] = await slow.webhooks.listDeliveries(T6);
+
+      const run = slow.webhooks.deliverPending(50, now);
+      await inFlight; // the worker is inside fetch now
+      // Another connection can lock the row: NOWAIT would raise 55P03 if the
+      // worker still held it inside an open transaction.
+      const client = await h.pool.connect();
+      try {
+        await client.query('BEGIN');
+        const locked = await client.query(
+          'SELECT id, status, next_attempt_at FROM mail.webhook_deliveries WHERE id = $1 FOR UPDATE NOWAIT',
+          [pending!.id],
+        );
+        assert.equal(locked.rows.length, 1);
+        assert.equal(locked.rows[0].status, 'pending');
+        assert.ok(locked.rows[0].next_attempt_at.getTime() > now.getTime(), 'leased: not due until the lease lapses');
+        await client.query('ROLLBACK');
+      } finally {
+        client.release();
+      }
+      // and a second worker sees nothing due meanwhile
+      assert.deepEqual(await mail.webhooks.deliverPending(50, now), { delivered: 0, failed: 0, retried: 0 });
+      release();
+      assert.deepEqual(await run, { delivered: 1, failed: 0, retried: 0 });
+      assert.equal((await slow.webhooks.listDeliveries(T6))[0]!.status, 'delivered');
+    });
+
     it('posts with redirect: "error" so a 3xx cannot walk past the guard', async () => {
       const T5 = 'tenant_redirect';
       await mail.webhooks.create(T5, { url: 'https://hooks.example/r', events: ['email.sent'] });
