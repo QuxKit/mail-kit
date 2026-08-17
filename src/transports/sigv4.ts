@@ -67,7 +67,14 @@ export function signV4(input: SignInput): Record<string, string> {
     .map(([k, v]) => `${k}=${v}`)
     .join('&');
 
-  const canonicalRequest = [input.method.toUpperCase(), canonicalPath, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const canonicalRequest = [
+    input.method.toUpperCase(),
+    canonicalPath,
+    canonicalQuery,
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join('\n');
   const scope = `${day}/${input.region}/${input.service}/aws4_request`;
   const stringToSign = ['AWS4-HMAC-SHA256', date, scope, sha256(canonicalRequest)].join('\n');
 

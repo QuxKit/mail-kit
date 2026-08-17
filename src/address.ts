@@ -18,6 +18,7 @@ export interface ParsedAddress {
   domain: string;
 }
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point of this check
 const CONTROL = /[\u0000-\u001f\u007f]/;
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
@@ -36,11 +37,11 @@ const NAME_ADDR = /^\s*(?:"([^"]*)"|([^<]*?))\s*<([^<>]+)>\s*$/;
 
 export function parseAddress(input: Address): ParsedAddress {
   let raw = typeof input === 'string' ? input : input.email;
-  let name = typeof input === 'string' ? null : (input.name?.trim() || null);
+  let name = typeof input === 'string' ? null : input.name?.trim() || null;
   if (typeof input === 'string') {
     const m = NAME_ADDR.exec(input);
     if (m) {
-      raw = m[3]!;
+      raw = m[3] ?? '';
       name = (m[1] ?? m[2] ?? '').trim() || null;
     }
   }
@@ -58,9 +59,8 @@ export function parseAddress(input: Address): ParsedAddress {
   const local = email.slice(0, at);
   if (local.length > 64) fail('local part longer than 64 characters');
   const domain = normaliseDomain(email.slice(at + 1));
-  if (!domain) fail('domain is not a valid hostname');
-  // `fail` never returns, but the narrowing needs the branch.
-  return { email: `${local}@${domain}`, name, domain: domain! };
+  if (!domain) return fail('domain is not a valid hostname');
+  return { email: `${local}@${domain}`, name, domain };
 }
 
 export function parseAddressList(input: Address | readonly Address[] | undefined): ParsedAddress[] {
@@ -92,7 +92,7 @@ export function encodeWord(value: string): string {
   let i = 0;
   while (i < bytes.length) {
     let end = Math.min(i + 45, bytes.length);
-    while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+    while (end < bytes.length && ((bytes[end] ?? 0) & 0xc0) === 0x80) end -= 1;
     chunks.push(`=?UTF-8?B?${bytes.subarray(i, end).toString('base64')}?=`);
     i = end;
   }

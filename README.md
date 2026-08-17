@@ -84,10 +84,13 @@ alternative" rebuilds — done once, with clean seams.
 
 ```ts
 import { createMail } from '@quxkit/mail-kit';
+import { pgExecutor } from '@quxkit/mail-kit/pg';
 import { sesTransport } from '@quxkit/mail-kit/ses';
+import pg from 'pg';
 
 const mail = createMail({
-  db,                                              // any SqlExecutor (a pg.Pool adapter is ~15 lines)
+  db: pgExecutor(new pg.Pool({ connectionString: process.env.DATABASE_URL })), // or any SqlExecutor
+  config: { dkimKey: process.env.MAIL_KIT_KEY },   // 64 hex chars: seals DKIM keys and webhook secrets at rest
   transport: sesTransport({
     region: 'eu-west-1',
     credentials: { accessKeyId, secretAccessKey },
@@ -118,7 +121,17 @@ await mail.events.record(parseSesEvents(snsBody)); // → status, suppression, w
 setInterval(() => mail.tick(), 5000);
 ```
 
-Apply the schema first: `psql -f node_modules/@quxkit/mail-kit/sql/001_mail.sql`.
+Apply the schema first, in order:
+
+```sh
+psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/001_mail.sql
+psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/002_hardening.sql
+```
+
+`@quxkit/mail-kit/pg` is the shipped `SqlExecutor` over a `pg.Pool` (`pg` is
+an optional peer). Any other driver is the same ~30 lines: `query` and a
+pinned-connection `transaction`. A runnable end-to-end example lives in
+[`examples/quickstart`](examples/quickstart/README.md).
 
 ## What it does carefully
 
@@ -157,8 +170,33 @@ parts:
   and can be replayed. `verifyWebhookSignature` is exported for the other side.
 - **SNS is verified before it is believed.** `verifySnsMessage` checks the
   signing certificate came from an `sns.<region>.amazonaws.com` https URL
-  before checking the signature — the one test that turns "verified" from a
-  formality into a fact.
+  and that `SignatureVersion` is `2` (RSA-SHA256; SHA1 is refused) before
+  checking the signature — the tests that turn "verified" from a formality
+  into a fact.
+- **A replayed event is recorded once.** SNS retries until it gets a 200 and
+  hosts replay queues; the same provider id + type + recipient + instant is
+  de-duplicated in the database (`ON CONFLICT DO NOTHING`), returned with
+  `deduplicated: true`, and does not re-suppress or re-fire webhooks. The
+  event row, status change, suppression and webhook rows commit together or
+  not at all.
+- **Webhook URLs are checked before they are trusted.** A tenant's endpoint
+  must be `https:` (`config.allowInsecureHttp` for development), and its host
+  is resolved and refused when it points at loopback, RFC 1918, link-local
+  (the cloud metadata address), shared address space, multicast, or their
+  IPv6 forms — at `create` and again before every POST, which is sent with
+  `redirect: 'error'`. Typed as `webhook_url_forbidden`. Secrets are sealed
+  at rest under `config.dkimKey`. Delivery leases a row and commits before
+  posting, so a slow endpoint holds no lock.
+- **`render()` gives back what was sent.** The multipart boundaries and the
+  DKIM-Signature header are stored with the `sent` update, so a dashboard's
+  "view source" is byte-identical to what the transport was handed — not a
+  fresh build over a possibly rotated key.
+- **Attachment metadata is validated**, not interpolated: CR/LF/NUL in
+  `filename`, `contentType` or `contentId` is `header_injection`; `contentType`
+  must be `type/subtype`; non-ASCII filenames go out as RFC 2231
+  `filename*=`, never raw.
+- **Pages and batches are bounded.** `list` limits cap at 200 and worker
+  batches at 500 (`MAX_LIST_LIMIT`, `MAX_BATCH`), clamped rather than refused.
 
 ## What it delegates
 
@@ -248,31 +286,38 @@ for a host that wants every send to go through the worker.
 
 Everything lives in a `mail` schema so it cannot collide with a host
 application's tables. `sql/001_mail.sql` declares `domains`, `messages`,
-`events`, `suppressions`, `webhook_subscriptions` and `webhook_deliveries`.
-Events and deliveries cascade from their parents; a message keeps its history
-when its domain is removed.
+`events`, `suppressions`, `webhook_subscriptions` and `webhook_deliveries`;
+`sql/002_hardening.sql` adds the event de-duplication index,
+`messages.rendering` and `webhook_subscriptions.secret_sealed`. Files are
+numbered, re-runnable and applied in order. Events and deliveries cascade
+from their parents; a message keeps its history when its domain is removed.
 
 ## Errors
 
 One class, `MailError`, carrying a discriminated union — `invalid_address`,
 `header_injection`, `invalid_input`, `domain_not_verified`,
 `idempotency_conflict`, `not_found`, `invalid_state`, `transport`
-(with `retryable`), `dkim_key_required`, `signature_invalid`. Narrow with
+(with `retryable`), `dkim_key_required`, `signature_invalid`,
+`webhook_url_forbidden` (with `url` and `reason`: not https, or a host that
+is or resolves to loopback / private / link-local / multicast). Narrow with
 `MailError.hasCode(e, 'domain_not_verified')`; never match the message.
 
 ## Development
 
 ```sh
 pnpm install
-pnpm typecheck
 createdb mail_kit_test   # the store-backed tests exercise real SQL; they skip without a DB
-pnpm test
+pnpm lint && pnpm typecheck && pnpm test
+pnpm test:coverage       # c8, with thresholds
 ```
 
 The unit suites (MIME, DKIM sign/verify, SigV4 against AWS's vectors, SES
 parsing and SNS verification, the SMTP client against a scripted server, the
-webhook signature pair) run offline. The store-backed suite runs the domain,
-send, event and webhook paths end to end through the memory transport.
+webhook signature pair, the URL guard) run offline. The store-backed suite
+runs the domain, send, event and webhook paths end to end through the memory
+transport; `REQUIRE_DB=1` (set in CI) makes a missing database a failure
+rather than a skip. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+issue → branch → PR flow and [SECURITY.md](SECURITY.md) for reporting.
 
 
 ## The QuxKit family

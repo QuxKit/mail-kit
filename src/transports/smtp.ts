@@ -8,8 +8,8 @@
 // DKIM key and signs before this transport ever sees the bytes.
 
 import { connect as netConnect, type Socket } from 'node:net';
-import { connect as tlsConnect, type ConnectionOptions } from 'node:tls';
 import { hostname } from 'node:os';
+import { type ConnectionOptions, connect as tlsConnect } from 'node:tls';
 import { MailError } from '../errors.ts';
 import type { MailTransport, OutboundEnvelope, TransportResult } from '../types.ts';
 
@@ -86,12 +86,13 @@ class Conn {
     const lines = this.buffer.split('\r\n');
     const complete: string[] = [];
     for (let i = 0; i < lines.length - 1; i += 1) {
-      complete.push(lines[i]!);
-      if (/^\d{3}(?: |$)/.test(lines[i]!)) {
+      const line = lines[i] ?? '';
+      complete.push(line);
+      if (/^\d{3}(?: |$)/.test(line)) {
         this.buffer = lines.slice(i + 1).join('\r\n');
         const w = this.waiting;
         this.waiting = null;
-        w.resolve({ code: Number(complete[complete.length - 1]!.slice(0, 3)), lines: complete.map((l) => l.slice(4)) });
+        w.resolve({ code: Number(line.slice(0, 3)), lines: complete.map((l) => l.slice(4)) });
         return;
       }
     }
@@ -146,7 +147,9 @@ export function dotStuff(raw: Uint8Array): string {
 /** `250 2.0.0 OK queued as ABC123` → `ABC123`, else null. */
 export function queuedId(reply: Reply): string | null {
   const last = reply.lines[reply.lines.length - 1] ?? '';
-  const m = /(?:queued as|id=|Message accepted for delivery|Queued mail for delivery)\s*[:\-]?\s*([\w.@<>+-]+)?/i.exec(last);
+  const m = /(?:queued as|id=|Message accepted for delivery|Queued mail for delivery)\s*[:-]?\s*([\w.@<>+-]+)?/i.exec(
+    last,
+  );
   return m?.[1] ?? null;
 }
 
@@ -159,7 +162,13 @@ export function smtpTransport(opts: SmtpTransportOptions): MailTransport {
 
   const retryable = (code: number | null): boolean => code === null || (code >= 400 && code < 500);
   const transportError = (code: number | null, detail: string): MailError =>
-    new MailError({ code: 'transport', transport: 'smtp', retryable: retryable(code), status: code ?? undefined, detail });
+    new MailError({
+      code: 'transport',
+      transport: 'smtp',
+      retryable: retryable(code),
+      status: code ?? undefined,
+      detail,
+    });
 
   const expect = (reply: Reply, ok: number[], what: string): Reply => {
     if (!ok.includes(reply.code)) throw new SmtpError(reply.code, `${what}: ${reply.code} ${reply.lines.join(' / ')}`);
@@ -181,7 +190,7 @@ export function smtpTransport(opts: SmtpTransportOptions): MailTransport {
     const reply = expect(await conn.command(`EHLO ${ehloName}`), [250], 'EHLO');
     const lines = reply.lines.slice(1);
     return {
-      ext: new Set(lines.map((l) => l.split(' ')[0]!.toUpperCase())),
+      ext: new Set(lines.map((l) => (l.split(' ')[0] ?? '').toUpperCase())),
       auth: lines.find((l) => l.toUpperCase().startsWith('AUTH')) ?? '',
     };
   };
@@ -222,7 +231,10 @@ export function smtpTransport(opts: SmtpTransportOptions): MailTransport {
             await conn.upgrade({ servername: opts.host, ...opts.tls });
             hello = await ehlo(conn);
           } else if (starttls === 'require') {
-            throw new SmtpError(500, 'server does not offer STARTTLS (set starttls: "opportunistic" or "never" only on a trusted network)');
+            throw new SmtpError(
+              500,
+              'server does not offer STARTTLS (set starttls: "opportunistic" or "never" only on a trusted network)',
+            );
           }
         }
         await authenticate(conn, hello.ext, hello.auth);
@@ -237,7 +249,10 @@ export function smtpTransport(opts: SmtpTransportOptions): MailTransport {
           else throw new SmtpError(r.code, `RCPT TO ${rcpt}: ${r.code} ${r.lines.join(' ')}`);
         }
         if (accepted === 0) {
-          throw new SmtpError(550, `every recipient was refused: ${rejected.map((r) => `${r.recipient} (${r.detail})`).join('; ')}`);
+          throw new SmtpError(
+            550,
+            `every recipient was refused: ${rejected.map((r) => `${r.recipient} (${r.detail})`).join('; ')}`,
+          );
         }
         expect(await conn.command('DATA'), [354], 'DATA');
         conn.write(dotStuff(envelope.raw));
@@ -248,7 +263,10 @@ export function smtpTransport(opts: SmtpTransportOptions): MailTransport {
           /* the server may close first; the message is already accepted */
         }
         conn.end();
-        return { providerMessageId: queuedId(done) ?? envelope.messageId, rejected: rejected.length ? rejected : undefined };
+        return {
+          providerMessageId: queuedId(done) ?? envelope.messageId,
+          rejected: rejected.length ? rejected : undefined,
+        };
       } catch (error) {
         conn?.end();
         if (error instanceof SmtpError) throw transportError(error.code, error.message);

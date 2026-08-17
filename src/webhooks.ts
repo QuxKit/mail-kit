@@ -10,8 +10,10 @@
 // is what a worker calls in a loop. That is what makes it survive a restart
 // and what makes it testable without a network.
 
-import { hmacSha256, randomToken, safeEqual } from './crypto.ts';
+import { hmacSha256, keyFromHex, randomToken, safeEqual, seal, unseal } from './crypto.ts';
 import { MailError } from './errors.ts';
+import { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from './limits.ts';
+import { assertWebhookUrlAllowed, type HostResolver } from './ssrf.ts';
 import type {
   Clock,
   CreatedWebhook,
@@ -32,6 +34,23 @@ export interface WebhooksOptions {
   maxAttempts?: number;
   /** Per-request timeout. Default 10s. */
   timeoutMs?: number;
+  /**
+   * Resolves a webhook host to its addresses so loopback/private/link-local
+   * targets can be refused (`webhook_url_forbidden`) at `create` and again at
+   * delivery. Default: node's `dns.lookup`. Tests hand in a map.
+   */
+  resolve?: HostResolver;
+  /** Permit `http:` webhook URLs (development only). Default false. */
+  allowInsecureHttp?: boolean;
+  /**
+   * 32 bytes as 64 hex chars. When set, subscription secrets are sealed
+   * (AES-256-GCM) before they reach the database and unsealed to sign each
+   * delivery; `createMail` passes `config.dkimKey`, the same key that seals
+   * DKIM private keys. Without it, secrets are stored as written. Rows
+   * written either way are read either way, so the key can be introduced
+   * on a live database; new rows are sealed from then on.
+   */
+  sealKey?: string;
 }
 
 export interface CreateWebhookInput {
@@ -53,14 +72,21 @@ export interface WebhooksApi {
   /** Queue one delivery per enabled subscription of `tenantId` that wants
    *  `type`. Returns how many were queued. */
   enqueue(tenantId: TenantId, type: WebhookEventType, data: Record<string, unknown>, at?: Date): Promise<number>;
-  /** Attempt every due delivery, up to `limit`. Safe to run concurrently —
-   *  rows are claimed with `FOR UPDATE SKIP LOCKED`. */
+  /** Attempt every due delivery, up to `limit` (default 50, capped at
+   *  `MAX_BATCH`). Safe to run concurrently —
+   *  rows are claimed (`FOR UPDATE SKIP LOCKED`) and leased in one committed
+   *  statement, then posted with no lock held. */
   deliverPending(limit?: number, now?: Date): Promise<{ delivered: number; failed: number; retried: number }>;
+  /** Newest first; `limit` defaults to 100, capped at `MAX_LIST_LIMIT`. */
   listDeliveries(tenantId: TenantId, opts?: { limit?: number; subscriptionId?: string }): Promise<WebhookDelivery[]>;
 }
 
 /** Retry schedule after the first attempt: 5s, 5m, 30m, 2h, 5h, 10h. */
 export const RETRY_SCHEDULE_S = [5, 300, 1800, 7200, 18000, 36000];
+
+/** How long a claimed delivery is invisible to other workers before it is
+ *  retried; covers the request timeout with room to record the outcome. */
+const LEASE_S = 90;
 
 /** The header set the receiver checks. */
 export function signWebhook(secret: string, id: string, timestamp: Date, body: string): Record<string, string> {
@@ -121,7 +147,6 @@ interface SubRow {
   id: string;
   tenant_id: string;
   url: string;
-  secret: string;
   events: WebhookEventType[];
   enabled: boolean;
   created_at: Date;
@@ -141,7 +166,8 @@ interface DeliveryRow {
   created_at: Date;
   delivered_at: Date | null;
   url?: string;
-  secret?: string;
+  secret?: string | null;
+  secret_sealed?: string | null;
 }
 
 const toSubscription = (r: SubRow): WebhookSubscription => ({
@@ -168,15 +194,61 @@ const toDelivery = (r: DeliveryRow): WebhookDelivery => ({
 });
 
 export const ALL_WEBHOOK_EVENTS: readonly WebhookEventType[] = [
-  'email.sent', 'email.delivered', 'email.delivery_delayed', 'email.bounced', 'email.complained',
-  'email.failed', 'email.opened', 'email.clicked', 'domain.verified', 'domain.failed',
+  'email.sent',
+  'email.delivered',
+  'email.delivery_delayed',
+  'email.bounced',
+  'email.complained',
+  'email.failed',
+  'email.opened',
+  'email.clicked',
+  'domain.verified',
+  'domain.failed',
 ];
+
+/**
+ * Queue one delivery per enabled subscription of `tenantId` that wants
+ * `type`, on `db` — which may be a transaction, and is when `events.record`
+ * calls it, so an event's row, status change, suppression and webhook rows
+ * commit or roll back together. Returns how many were queued.
+ */
+export async function enqueueWebhookDeliveries(
+  db: SqlExecutor,
+  tenantId: TenantId,
+  type: WebhookEventType,
+  data: Record<string, unknown>,
+  at: Date,
+  now: Date,
+): Promise<number> {
+  const payload: WebhookPayload = { type, created_at: at.toISOString(), data };
+  const rows = await db.query<{ id: string }>(
+    `INSERT INTO mail.webhook_deliveries (subscription_id, tenant_id, event_type, payload, next_attempt_at)
+     SELECT id, tenant_id, $2, $3::jsonb, $4
+       FROM mail.webhook_subscriptions
+      WHERE tenant_id = $1 AND enabled AND $2 = ANY(events)
+     RETURNING id`,
+    [tenantId, type, JSON.stringify(payload), now],
+  );
+  return rows.length;
+}
 
 export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
   const { db, fetch } = opts;
   const clock: Clock = opts.clock ?? (() => new Date());
   const maxAttempts = opts.maxAttempts ?? RETRY_SCHEDULE_S.length + 1;
   const timeoutMs = opts.timeoutMs ?? 10_000;
+  const resolve: HostResolver = opts.resolve ?? lazyNodeLookup();
+  const sealKey = opts.sealKey ? keyFromHex(opts.sealKey, 'sealKey') : null;
+  /** The signing secret for a delivery row, whichever way it was stored. */
+  const secretOf = (row: DeliveryRow): string => {
+    if (row.secret_sealed) {
+      if (!sealKey) throw new Error('mail-kit: webhook secret is sealed but no sealKey (config.dkimKey) is configured');
+      return unseal(sealKey, row.secret_sealed);
+    }
+    if (row.secret) return row.secret;
+    throw new Error('mail-kit: webhook subscription has no secret');
+  };
+  const guard = { resolve, allowInsecureHttp: opts.allowInsecureHttp ?? false };
 
   return {
     async create(tenantId, input) {
@@ -189,23 +261,27 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
       if (url.protocol !== 'https:' && url.protocol !== 'http:') {
         throw new MailError({ code: 'invalid_input', reason: 'webhook url must be http(s)' });
       }
+      await assertWebhookUrlAllowed(url, guard);
       const events = [...new Set(input.events)];
       for (const e of events) {
-        if (!ALL_WEBHOOK_EVENTS.includes(e)) throw new MailError({ code: 'invalid_input', reason: `unknown webhook event ${e}` });
+        if (!ALL_WEBHOOK_EVENTS.includes(e))
+          throw new MailError({ code: 'invalid_input', reason: `unknown webhook event ${e}` });
       }
-      if (events.length === 0) throw new MailError({ code: 'invalid_input', reason: 'a webhook needs at least one event' });
+      if (events.length === 0)
+        throw new MailError({ code: 'invalid_input', reason: 'a webhook needs at least one event' });
       const secret = `whsec_${Buffer.from(randomToken(24), 'base64url').toString('base64')}`;
       const rows = await db.query<SubRow>(
-        `INSERT INTO mail.webhook_subscriptions (tenant_id, url, secret, events)
-         VALUES ($1, $2, $3, $4) RETURNING id, tenant_id, url, secret, events, enabled, created_at`,
-        [tenantId, url.toString(), secret, events],
+        `INSERT INTO mail.webhook_subscriptions (tenant_id, url, secret, secret_sealed, events)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id, tenant_id, url, events, enabled, created_at`,
+        [tenantId, url.toString(), sealKey ? null : secret, sealKey ? seal(sealKey, secret) : null, events],
       );
+      // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING always yields one row
       return { ...toSubscription(rows[0]!), secret };
     },
 
     async list(tenantId) {
       const rows = await db.query<SubRow>(
-        `SELECT id, tenant_id, url, secret, events, enabled, created_at FROM mail.webhook_subscriptions
+        `SELECT id, tenant_id, url, events, enabled, created_at FROM mail.webhook_subscriptions
           WHERE tenant_id = $1 ORDER BY created_at DESC`,
         [tenantId],
       );
@@ -228,73 +304,81 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
       return rows.length > 0;
     },
 
-    async enqueue(tenantId, type, data, at) {
-      const payload: WebhookPayload = { type, created_at: (at ?? clock()).toISOString(), data };
-      const rows = await db.query<{ id: string }>(
-        `INSERT INTO mail.webhook_deliveries (subscription_id, tenant_id, event_type, payload, next_attempt_at)
-         SELECT id, tenant_id, $2, $3::jsonb, $4
-           FROM mail.webhook_subscriptions
-          WHERE tenant_id = $1 AND enabled AND $2 = ANY(events)
-         RETURNING id`,
-        [tenantId, type, JSON.stringify(payload), clock()],
-      );
-      return rows.length;
-    },
+    enqueue: (tenantId, type, data, at) => enqueueWebhookDeliveries(db, tenantId, type, data, at ?? clock(), clock()),
 
     async deliverPending(limit = 50, now = clock()) {
       const out = { delivered: 0, failed: 0, retried: 0 };
-      // Claim a batch of ids, then process each in its own transaction so a
-      // slow endpoint holds one row lock, not the batch.
-      const due = await db.query<{ id: string }>(
-        `SELECT id FROM mail.webhook_deliveries
-          WHERE status = 'pending' AND next_attempt_at <= $1
-          ORDER BY next_attempt_at LIMIT $2`,
-        [now, limit],
+      // Claim, then commit, then post. The claim leases each due row (its
+      // next_attempt_at moves past the lease) in one autocommitted statement,
+      // so no row lock is held while an endpoint takes its time to answer;
+      // the outcome is recorded afterwards. A worker that dies mid-post
+      // leaves the row to be retried when the lease lapses — at-least-once,
+      // and the receiver has webhook-id to de-duplicate on.
+      const claimed = await db.query<DeliveryRow>(
+        `UPDATE mail.webhook_deliveries d
+            SET next_attempt_at = $2
+           FROM mail.webhook_subscriptions s
+          WHERE d.id IN (
+                  SELECT id FROM mail.webhook_deliveries
+                   WHERE status = 'pending' AND next_attempt_at <= $1
+                   ORDER BY next_attempt_at LIMIT $3
+                   FOR UPDATE SKIP LOCKED)
+            AND s.id = d.subscription_id
+          RETURNING d.id, d.subscription_id, d.tenant_id, d.event_type, d.payload, d.status, d.attempts,
+                    d.last_status_code, d.last_error, d.next_attempt_at, d.created_at, d.delivered_at,
+                    s.url, s.secret, s.secret_sealed`,
+        [now, new Date(now.getTime() + LEASE_S * 1000), clampLimit(limit, 50, MAX_BATCH)],
       );
-      for (const { id } of due) {
-        await db.transaction(async (tx) => {
-          const rows = await tx.query<DeliveryRow>(
-            `SELECT d.*, s.url, s.secret
-               FROM mail.webhook_deliveries d JOIN mail.webhook_subscriptions s ON s.id = d.subscription_id
-              WHERE d.id = $1 AND d.status = 'pending' FOR UPDATE OF d SKIP LOCKED`,
-            [id],
-          );
-          const row = rows[0];
-          if (!row) return;
-          const body = JSON.stringify(row.payload);
-          const attempt = row.attempts + 1;
-          const result = await post(fetch, row.url!, row.secret!, row.id, body, now, timeoutMs);
-          if (result.ok) {
-            await tx.query(
-              `UPDATE mail.webhook_deliveries
-                  SET status = 'delivered', attempts = $2, last_status_code = $3, last_error = NULL,
-                      next_attempt_at = NULL, delivered_at = $4
-                WHERE id = $1`,
-              [row.id, attempt, result.status, now],
-            );
-            out.delivered += 1;
-            return;
-          }
-          if (attempt >= maxAttempts) {
-            await tx.query(
-              `UPDATE mail.webhook_deliveries
-                  SET status = 'failed', attempts = $2, last_status_code = $3, last_error = $4, next_attempt_at = NULL
-                WHERE id = $1`,
-              [row.id, attempt, result.status, result.error],
-            );
-            out.failed += 1;
-            opts.logger?.warn('webhook delivery failed permanently', { id: row.id, url: row.url, attempts: attempt });
-            return;
-          }
-          const delay = RETRY_SCHEDULE_S[Math.min(attempt - 1, RETRY_SCHEDULE_S.length - 1)]!;
-          await tx.query(
-            `UPDATE mail.webhook_deliveries
-                SET attempts = $2, last_status_code = $3, last_error = $4, next_attempt_at = $5
-              WHERE id = $1`,
-            [row.id, attempt, result.status, result.error, new Date(now.getTime() + delay * 1000)],
-          );
+      for (const row of claimed) {
+        const body = JSON.stringify(row.payload);
+        const attempt = row.attempts + 1;
+        let secret: string;
+        try {
+          secret = secretOf(row);
+        } catch (error) {
+          // A configuration problem, not the endpoint's: leave the row to
+          // retry once the key is configured, and say why.
+          const detail = error instanceof Error ? error.message : String(error);
+          opts.logger?.error('webhook secret unavailable', { id: row.id, error: detail });
+          await db.query(`UPDATE mail.webhook_deliveries SET last_error = $2, next_attempt_at = $3 WHERE id = $1`, [
+            row.id,
+            detail,
+            new Date(now.getTime() + (RETRY_SCHEDULE_S[0] ?? 5) * 1000),
+          ]);
           out.retried += 1;
-        });
+          continue;
+        }
+        const result = await guardedPost(fetch, guard, row.url ?? '', secret, row.id, body, now, timeoutMs);
+        if (result.ok) {
+          await db.query(
+            `UPDATE mail.webhook_deliveries
+                SET status = 'delivered', attempts = $2, last_status_code = $3, last_error = NULL,
+                    next_attempt_at = NULL, delivered_at = $4
+              WHERE id = $1`,
+            [row.id, attempt, result.status, now],
+          );
+          out.delivered += 1;
+          continue;
+        }
+        if (result.permanent || attempt >= maxAttempts) {
+          await db.query(
+            `UPDATE mail.webhook_deliveries
+                SET status = 'failed', attempts = $2, last_status_code = $3, last_error = $4, next_attempt_at = NULL
+              WHERE id = $1`,
+            [row.id, attempt, result.status, result.error],
+          );
+          out.failed += 1;
+          opts.logger?.warn('webhook delivery failed permanently', { id: row.id, url: row.url, attempts: attempt });
+          continue;
+        }
+        const delay = RETRY_SCHEDULE_S[Math.min(attempt - 1, RETRY_SCHEDULE_S.length - 1)] ?? 0;
+        await db.query(
+          `UPDATE mail.webhook_deliveries
+              SET attempts = $2, last_status_code = $3, last_error = $4, next_attempt_at = $5
+            WHERE id = $1`,
+          [row.id, attempt, result.status, result.error, new Date(now.getTime() + delay * 1000)],
+        );
+        out.retried += 1;
       }
       return out;
     },
@@ -306,11 +390,43 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
            FROM mail.webhook_deliveries
           WHERE tenant_id = $1 AND ($3::uuid IS NULL OR subscription_id = $3)
           ORDER BY created_at DESC LIMIT $2`,
-        [tenantId, o?.limit ?? 100, o?.subscriptionId ?? null],
+        [tenantId, clampLimit(o?.limit, 100, MAX_LIST_LIMIT), o?.subscriptionId ?? null],
       );
       return rows.map(toDelivery);
     },
   };
+}
+
+interface PostResult {
+  ok: boolean;
+  status: number | null;
+  error: string | null;
+  /** True when retrying cannot help (the URL is forbidden). */
+  permanent?: boolean;
+}
+
+/** Re-check the URL against the guard at delivery time, then post. A URL
+ *  that has become forbidden (DNS now answers a private address) is a
+ *  permanent failure; a resolver error is a retryable one. */
+async function guardedPost(
+  fetch: Fetch,
+  guard: { resolve: HostResolver; allowInsecureHttp: boolean },
+  url: string,
+  secret: string,
+  id: string,
+  body: string,
+  now: Date,
+  timeoutMs: number,
+): Promise<PostResult> {
+  try {
+    await assertWebhookUrlAllowed(new URL(url), guard);
+  } catch (error) {
+    if (MailError.hasCode(error, 'webhook_url_forbidden')) {
+      return { ok: false, status: null, error: `webhook_url_forbidden: ${error.failure.reason}`, permanent: true };
+    }
+    return { ok: false, status: null, error: error instanceof Error ? error.message : String(error) };
+  }
+  return post(fetch, url, secret, id, body, now, timeoutMs);
 }
 
 async function post(
@@ -321,7 +437,7 @@ async function post(
   body: string,
   now: Date,
   timeoutMs: number,
-): Promise<{ ok: boolean; status: number | null; error: string | null }> {
+): Promise<PostResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -334,6 +450,7 @@ async function post(
       },
       body,
       signal: controller.signal,
+      redirect: 'error',
     });
     if (res.status >= 200 && res.status < 300) return { ok: true, status: res.status, error: null };
     return { ok: false, status: res.status, error: `HTTP ${res.status}` };
@@ -342,4 +459,13 @@ async function post(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Import node:dns only when the default resolver is actually used. */
+function lazyNodeLookup(): HostResolver {
+  let real: HostResolver | null = null;
+  return async (hostname) => {
+    if (!real) real = (await import('./dns.ts')).nodeLookup;
+    return real(hostname);
+  };
 }

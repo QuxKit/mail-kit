@@ -8,7 +8,9 @@ import { promises as dns } from 'node:dns';
 import type { DnsResolver } from './types.ts';
 
 const notFound = (error: unknown): boolean =>
-  typeof error === 'object' && error !== null && 'code' in error &&
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
   ['ENOTFOUND', 'ENODATA', 'ESERVFAIL'].includes(String((error as { code: unknown }).code));
 
 export function nodeDnsResolver(servers?: string[]): DnsResolver {
@@ -24,8 +26,25 @@ export function nodeDnsResolver(servers?: string[]): DnsResolver {
   };
   return {
     // node returns each TXT record as its chunks; a record is their concatenation
-    resolveTxt: (name) => swallow(r.resolveTxt(name).then((rr) => rr.map((chunks) => chunks.join(''))), []),
+    resolveTxt: (name) =>
+      swallow(
+        r.resolveTxt(name).then((rr) => rr.map((chunks) => chunks.join(''))),
+        [],
+      ),
     resolveCname: (name) => swallow(r.resolveCname(name), []),
     resolveMx: (name) => swallow(r.resolveMx(name), []),
+    lookup: (hostname) => nodeLookup(hostname),
   };
+}
+
+/** Every address for a hostname via the system resolver (`dns.lookup`, which
+ *  honours /etc/hosts — the same answer the HTTP client will get). */
+export async function nodeLookup(hostname: string): Promise<string[]> {
+  try {
+    const found = await dns.lookup(hostname, { all: true });
+    return found.map((a) => a.address);
+  } catch (error) {
+    if (notFound(error)) return [];
+    throw error;
+  }
 }

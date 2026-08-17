@@ -1,0 +1,14 @@
+{
+  "all": true,
+  "src": ["src"],
+  "include": ["src/**/*.ts"],
+  "exclude": ["test/**", "**/*.test.ts", "dist/**", "examples/**", "src/types.ts"],
+  "reporter": ["text", "lcov"],
+  "reports-dir": "coverage",
+  "exclude-after-remap": true,
+  "check-coverage": true,
+  "lines": 95,
+  "functions": 95,
+  "branches": 80,
+  "statements": 95
+}

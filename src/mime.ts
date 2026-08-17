@@ -8,7 +8,7 @@
 // for line breaks before they are written.
 
 import { randomBytes } from 'node:crypto';
-import { encodeWord, renderAddress, type ParsedAddress } from './address.ts';
+import { encodeWord, type ParsedAddress, renderAddress } from './address.ts';
 import { MailError } from './errors.ts';
 import type { Attachment, ListUnsubscribe } from './types.ts';
 
@@ -25,6 +25,12 @@ export interface MimeInput {
   listUnsubscribe?: ListUnsubscribe;
   messageId: string;
   date: Date;
+  /**
+   * Multipart boundaries to use, in the order `buildMimeDetailed` reported
+   * them, instead of fresh random ones — what makes a rebuild byte-identical
+   * to the original. Extra entries are ignored; missing ones are generated.
+   */
+  boundaries?: readonly string[];
 }
 
 const CRLF = '\r\n';
@@ -32,13 +38,27 @@ const CRLF = '\r\n';
 /** Header names mail-kit sets itself; a caller's `headers` may not override
  *  them, because they are what the envelope, threading and DKIM rely on. */
 const RESERVED = new Set([
-  'from', 'to', 'cc', 'bcc', 'subject', 'date', 'message-id', 'mime-version',
-  'content-type', 'content-transfer-encoding', 'reply-to', 'return-path',
+  'from',
+  'to',
+  'cc',
+  'bcc',
+  'subject',
+  'date',
+  'message-id',
+  'mime-version',
+  'content-type',
+  'content-transfer-encoding',
+  'reply-to',
+  'return-path',
 ]);
 
 export function assertHeaderSafe(name: string, value: string): void {
   if (/[\r\n]/.test(name) || /[\r\n]/.test(value)) throw new MailError({ code: 'header_injection', header: name });
-  if (!/^[!-9;-~]+$/.test(name)) throw new MailError({ code: 'invalid_input', reason: `header name ${JSON.stringify(name)} is not a valid field name` });
+  if (!/^[!-9;-~]+$/.test(name))
+    throw new MailError({
+      code: 'invalid_input',
+      reason: `header name ${JSON.stringify(name)} is not a valid field name`,
+    });
 }
 
 /** `<random@domain>` — the domain is the sender's, so the id is attributable. */
@@ -73,12 +93,12 @@ export function quotedPrintable(text: string): string {
     line = '';
   };
   for (let i = 0; i < bytes.length; i += 1) {
-    const b = bytes[i]!;
+    const b = bytes[i] ?? 0;
     if (b === 0x0d && bytes[i + 1] === 0x0a) {
       // protect trailing whitespace on the line before a hard break
       if (line.endsWith(' ') || line.endsWith('\t')) {
-        const last = line.at(-1)!;
-        line = `${line.slice(0, -1)}=${last.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`;
+        const last = line.charCodeAt(line.length - 1);
+        line = `${line.slice(0, -1)}=${last.toString(16).toUpperCase().padStart(2, '0')}`;
       }
       flush(false);
       i += 1;
@@ -102,7 +122,27 @@ export function base64Lines(bytes: Uint8Array): string {
   return lines.join(CRLF);
 }
 
-const boundary = (): string => `----=_qk_${randomBytes(12).toString('hex')}`;
+const newBoundary = (): string => `----=_qk_${randomBytes(12).toString('hex')}`;
+
+/** Hands out boundaries: the caller's first, then fresh ones; records all. */
+class Boundaries {
+  used: string[] = [];
+  private queue: string[];
+  constructor(preset: readonly string[] = []) {
+    this.queue = [...preset];
+  }
+  next(): string {
+    const b = this.queue.shift() ?? newBoundary();
+    if (!/^[0-9A-Za-z'()+_,\-./:=?]{1,70}$/.test(b) || b.endsWith(' ')) {
+      throw new MailError({
+        code: 'invalid_input',
+        reason: `multipart boundary ${JSON.stringify(b)} is not RFC 2046 bchars`,
+      });
+    }
+    this.used.push(b);
+    return b;
+  }
+}
 
 /** Fold a header at 78 chars on whitespace where it can (RFC 5322 §2.2.3). */
 function fold(name: string, value: string): string {
@@ -131,16 +171,73 @@ function textPart(contentType: string, body: string): string {
   );
 }
 
+// RFC 2045 token: printable ASCII minus tspecials, space and controls.
+const TOKEN = "[!#$%&'*+.^_`|~0-9A-Za-z-]+";
+const CONTENT_TYPE = new RegExp(`^${TOKEN}/${TOKEN}(?:\\s*;\\s*${TOKEN}=(?:${TOKEN}|"[^"\\\\\\r\\n\\u0000]*"))*$`);
+// RFC 2231 attribute-char: what may stand unencoded in an extended parameter.
+const RFC2231_SAFE = /^[A-Za-z0-9!#$&+\-.^_`|~]$/;
+
+/**
+ * Refuse an attachment whose metadata cannot be written into a header
+ * without either breaking the header (CR/LF/NUL) or changing its meaning
+ * (a `contentType` that is not `type/subtype`, a `contentId` that is not a
+ * bare id). Called by `normaliseInput` before any row exists, and again by
+ * `buildMime`, which is public.
+ */
+export function assertAttachmentSafe(a: Attachment): void {
+  if (typeof a.filename !== 'string' || a.filename.length === 0 || a.filename.length > 255) {
+    throw new MailError({ code: 'invalid_input', reason: 'attachment filename must be 1-255 characters' });
+  }
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing control characters is the point
+  if (/[\r\n\u0000]/.test(a.filename)) throw new MailError({ code: 'header_injection', header: 'Content-Disposition' });
+  if (a.contentType !== undefined) {
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing control characters is the point
+    if (/[\r\n\u0000]/.test(a.contentType)) throw new MailError({ code: 'header_injection', header: 'Content-Type' });
+    if (!CONTENT_TYPE.test(a.contentType)) {
+      throw new MailError({
+        code: 'invalid_input',
+        reason: `attachment contentType ${JSON.stringify(a.contentType)} is not a type/subtype media type`,
+      });
+    }
+  }
+  if (a.contentId !== undefined) {
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing control characters is the point
+    if (/[\r\n\u0000]/.test(a.contentId)) throw new MailError({ code: 'header_injection', header: 'Content-ID' });
+    if (!/^[!-;=?-~]{1,200}$/.test(a.contentId)) {
+      throw new MailError({
+        code: 'invalid_input',
+        reason: `attachment contentId ${JSON.stringify(a.contentId)} must be printable ASCII without <, > or whitespace`,
+      });
+    }
+  }
+}
+
+/** RFC 2231 `filename*=UTF-8''...` value: percent-encode every byte that is
+ *  not an attribute-char (encodeURIComponent leaves `'()*` bare, which RFC
+ *  2231 does not allow). */
+function rfc2231Value(value: string): string {
+  let out = '';
+  for (const byte of Buffer.from(value, 'utf8')) {
+    const ch = String.fromCharCode(byte);
+    out += RFC2231_SAFE.test(ch) ? ch : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+  }
+  return `UTF-8''${out}`;
+}
+
 function attachmentPart(a: Attachment): string {
+  assertAttachmentSafe(a);
   const bytes = typeof a.content === 'string' ? Buffer.from(a.content, 'base64') : a.content;
   const type = a.contentType ?? 'application/octet-stream';
-  const filename = /[^\u0020-\u007e]/.test(a.filename)
-    ? `filename*=UTF-8''${encodeURIComponent(a.filename)}`
-    : `filename="${a.filename.replace(/(["\\])/g, '\\$1')}"`;
+  const ascii = !/[^\u0020-\u007e]/.test(a.filename);
+  const quoted = `"${a.filename.replace(/(["\\])/g, '\\$1')}"`;
+  // ASCII: a quoted-string in both places. Non-ASCII: RFC 2231 in
+  // Content-Disposition, and no `name=` at all rather than raw bytes.
+  const filename = ascii ? `filename=${quoted}` : `filename*=${rfc2231Value(a.filename)}`;
+  const name = ascii ? `; name=${quoted}` : '';
   const disposition = a.contentId ? 'inline' : 'attachment';
   const cid = a.contentId ? `Content-ID: <${a.contentId}>${CRLF}` : '';
   return (
-    `Content-Type: ${type}; name="${a.filename.replace(/(["\\])/g, '\\$1')}"${CRLF}` +
+    `Content-Type: ${type}${name}${CRLF}` +
     `Content-Transfer-Encoding: base64${CRLF}` +
     `Content-Disposition: ${disposition}; ${filename}${CRLF}` +
     cid +
@@ -149,18 +246,27 @@ function attachmentPart(a: Attachment): string {
   );
 }
 
-function multipart(subtype: string, parts: string[]): string {
-  const b = boundary();
-  const body = parts.map((p) => `--${b}${CRLF}${p}`).join(CRLF) + `${CRLF}--${b}--`;
+function multipart(bounds: Boundaries, subtype: string, parts: string[]): string {
+  const b = bounds.next();
+  const body = `${parts.map((p) => `--${b}${CRLF}${p}`).join(CRLF)}${CRLF}--${b}--`;
   return `Content-Type: multipart/${subtype}; boundary="${b}"${CRLF}${CRLF}${body}`;
 }
 
-/** Build the message. Returns the bytes and the sorted header names that
- *  were written, which the DKIM signer uses to decide what to sign. */
+/** Build the message. */
 export function buildMime(input: MimeInput): Uint8Array {
-  if (!input.text && !input.html) throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
-  if (input.to.length === 0) throw new MailError({ code: 'invalid_input', reason: 'a message needs at least one To recipient' });
+  return buildMimeDetailed(input).raw;
+}
+
+/** Build the message and report the multipart boundaries used, in
+ *  consumption order, so the same bytes can be rebuilt later (`input.boundaries`). */
+export function buildMimeDetailed(input: MimeInput): { raw: Uint8Array; boundaries: string[] } {
+  const bounds = new Boundaries(input.boundaries);
+  if (!input.text && !input.html)
+    throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
+  if (input.to.length === 0)
+    throw new MailError({ code: 'invalid_input', reason: 'a message needs at least one To recipient' });
   assertHeaderSafe('Subject', input.subject);
+  for (const a of input.attachments ?? []) assertAttachmentSafe(a);
 
   const headers: string[] = [];
   headers.push(fold('From', renderAddress(input.from)));
@@ -184,7 +290,10 @@ export function buildMime(input: MimeInput): Uint8Array {
   for (const [name, value] of Object.entries(input.headers ?? {})) {
     assertHeaderSafe(name, value);
     if (RESERVED.has(name.toLowerCase())) {
-      throw new MailError({ code: 'invalid_input', reason: `header ${name} is set by mail-kit and cannot be overridden` });
+      throw new MailError({
+        code: 'invalid_input',
+        reason: `header ${name} is set by mail-kit and cannot be overridden`,
+      });
     }
     headers.push(fold(name, headerText(value)));
   }
@@ -201,15 +310,17 @@ export function buildMime(input: MimeInput): Uint8Array {
 
   const htmlPart = input.html
     ? inline.length
-      ? multipart('related', [textPart('text/html', input.html), ...inline.map(attachmentPart)])
+      ? multipart(bounds, 'related', [textPart('text/html', input.html), ...inline.map(attachmentPart)])
       : textPart('text/html', input.html)
     : null;
   const plainPart = input.text ? textPart('text/plain', input.text) : null;
 
-  if (plainPart && htmlPart) body = multipart('alternative', [plainPart, htmlPart]);
-  else body = (plainPart ?? htmlPart)!;
+  if (plainPart && htmlPart) body = multipart(bounds, 'alternative', [plainPart, htmlPart]);
+  else if (plainPart) body = plainPart;
+  else if (htmlPart) body = htmlPart;
+  else throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
 
-  if (attached.length) body = multipart('mixed', [body, ...attached.map(attachmentPart)]);
+  if (attached.length) body = multipart(bounds, 'mixed', [body, ...attached.map(attachmentPart)]);
 
-  return Buffer.from(headers.join(CRLF) + CRLF + body + CRLF, 'utf8');
+  return { raw: Buffer.from(headers.join(CRLF) + CRLF + body + CRLF, 'utf8'), boundaries: bounds.used };
 }

@@ -87,12 +87,37 @@ export function memoryTransport(opts: MemoryTransportOptions = {}): MemoryTransp
     t.registerDomain = async (domain, { returnPathHost }): Promise<DomainRegistration> => {
       registered.push(domain);
       const records: DnsRecord[] = [
-        { type: 'CNAME', name: `mem1._domainkey.${domain}`, value: 'mem1.dkim.memory.test', purpose: 'dkim', required: true },
-        { type: 'CNAME', name: `mem2._domainkey.${domain}`, value: 'mem2.dkim.memory.test', purpose: 'dkim', required: true },
+        {
+          type: 'CNAME',
+          name: `mem1._domainkey.${domain}`,
+          value: 'mem1.dkim.memory.test',
+          purpose: 'dkim',
+          required: true,
+        },
+        {
+          type: 'CNAME',
+          name: `mem2._domainkey.${domain}`,
+          value: 'mem2.dkim.memory.test',
+          purpose: 'dkim',
+          required: true,
+        },
       ];
       if (returnPathHost) {
-        records.push({ type: 'MX', name: returnPathHost, value: 'feedback.memory.test', priority: 10, purpose: 'return_path', required: true });
-        records.push({ type: 'TXT', name: returnPathHost, value: 'v=spf1 include:memory.test ~all', purpose: 'spf', required: true });
+        records.push({
+          type: 'MX',
+          name: returnPathHost,
+          value: 'feedback.memory.test',
+          priority: 10,
+          purpose: 'return_path',
+          required: true,
+        });
+        records.push({
+          type: 'TXT',
+          name: returnPathHost,
+          value: 'v=spf1 include:memory.test ~all',
+          purpose: 'spf',
+          required: true,
+        });
       }
       return { records, providerRef: `mem:${domain}` };
     };

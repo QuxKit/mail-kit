@@ -47,6 +47,9 @@ export interface FetchInit {
   headers: Record<string, string>;
   body?: string;
   signal?: AbortSignal;
+  /** Webhook posts are sent with `'error'`: a redirect is a failure, never
+   *  followed — a 3xx to an internal address must not get past the URL guard. */
+  redirect?: 'error' | 'follow' | 'manual';
 }
 
 export interface FetchResponse {
@@ -69,10 +72,11 @@ export type TenantId = string;
 
 export interface MailConfig {
   /**
-   * 32 bytes as 64 hex chars (`openssl rand -hex 32`). Required only when a
-   * domain is added on a transport that does not sign — mail-kit then generates
-   * the DKIM key pair and this is the AES-256-GCM key its private half is
-   * sealed under before it reaches the database. Kept out of the database and
+   * 32 bytes as 64 hex chars (`openssl rand -hex 32`). The AES-256-GCM key
+   * under which secrets are sealed before they reach the database: the DKIM
+   * private key mail-kit generates for a domain on a transport that does not
+   * sign (required for that), and webhook subscription secrets (sealed when
+   * this is set; stored as written otherwise). Kept out of the database and
    * out of the backup, like identity-kit's pepper.
    */
   dkimKey?: string;
@@ -92,6 +96,13 @@ export interface MailConfig {
   maxAttempts?: number;
   /** Webhook deliveries are attempted this many times in total. Default 7. */
   webhookMaxAttempts?: number;
+  /**
+   * Permit `http:` webhook URLs. Default false: a webhook endpoint must be
+   * `https:`. For development against a local receiver only — and even then
+   * the host must not be loopback or private (`webhook_url_forbidden`), so
+   * point it at a tunnel, not at 127.0.0.1.
+   */
+  allowInsecureHttp?: boolean;
 }
 
 // --- addresses and messages -------------------------------------------------
@@ -253,6 +264,9 @@ export interface DnsResolver {
   resolveTxt(name: string): Promise<string[]>;
   resolveCname(name: string): Promise<string[]>;
   resolveMx(name: string): Promise<Array<{ exchange: string; priority: number }>>;
+  /** Hostname → every address (A + AAAA). Used by the webhook URL guard; when
+   *  absent, node's `dns.lookup` is used. */
+  lookup?(hostname: string): Promise<string[]>;
 }
 
 // --- transport (the seam) ---------------------------------------------------
@@ -358,6 +372,9 @@ export interface RecordedEvent {
   recipient: string | null;
   at: Date;
   detail: Record<string, unknown>;
+  /** True when this event was already stored (a provider replay) and the
+   *  call therefore changed nothing. */
+  deduplicated?: boolean;
 }
 
 // --- suppression ------------------------------------------------------------

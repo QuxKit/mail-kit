@@ -16,6 +16,7 @@ import { normaliseDomain } from './address.ts';
 import { keyFromHex, seal, unseal } from './crypto.ts';
 import { dkimTxtRecord, generateDkimKey } from './dkim.ts';
 import { MailError } from './errors.ts';
+import { clampLimit, MAX_BATCH } from './limits.ts';
 import type {
   AddDomainInput,
   Clock,
@@ -142,7 +143,9 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
     required: false,
   });
 
-  const check = async (domain: SendingDomain): Promise<{ checks: RecordCheck[]; transportOk: boolean; detail?: string }> => {
+  const check = async (
+    domain: SendingDomain,
+  ): Promise<{ checks: RecordCheck[]; transportOk: boolean; detail?: string }> => {
     const checks: RecordCheck[] = [];
     for (const record of domain.records) {
       let found: string[] = [];
@@ -158,7 +161,10 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
     let transportOk = true;
     let detail: string | undefined;
     if (transport.checkDomain) {
-      const rows = await db.query<{ provider_ref: string | null }>('SELECT provider_ref FROM mail.domains WHERE id = $1', [domain.id]);
+      const rows = await db.query<{ provider_ref: string | null }>(
+        'SELECT provider_ref FROM mail.domains WHERE id = $1',
+        [domain.id],
+      );
       const verdict = await transport.checkDomain(domain.name, rows[0]?.provider_ref ?? null);
       transportOk = verdict.verified;
       detail = verdict.detail;
@@ -180,10 +186,12 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
         WHERE id = $1 RETURNING ${COLUMNS}`,
       [domain.id, status, JSON.stringify(checks), now],
     );
+    // biome-ignore lint/style/noNonNullAssertion: UPDATE … RETURNING on a row we just read
     const updated = toDomain(rows[0]!);
     if (status !== domain.status) {
       const type = status === 'verified' ? 'domain.verified' : status === 'failed' ? 'domain.failed' : null;
-      if (type) await webhooks.enqueue(domain.tenantId, type, { domain_id: updated.id, name: updated.name, status }, now);
+      if (type)
+        await webhooks.enqueue(domain.tenantId, type, { domain_id: updated.id, name: updated.name, status }, now);
     }
     return updated;
   };
@@ -191,15 +199,21 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
   const api: DomainsApi = {
     async add(tenantId, input) {
       const name = normaliseDomain(input.name);
-      if (!name) throw new MailError({ code: 'invalid_input', reason: `${JSON.stringify(input.name)} is not a domain name` });
+      if (!name)
+        throw new MailError({ code: 'invalid_input', reason: `${JSON.stringify(input.name)} is not a domain name` });
       const rpSub = input.returnPathSubdomain === undefined ? 'bounce' : input.returnPathSubdomain;
       const returnPathHost = rpSub ? `${rpSub}.${name}` : null;
 
-      const existing = await db.query<{ tenant_id: string }>('SELECT tenant_id FROM mail.domains WHERE name = $1', [name]);
+      const existing = await db.query<{ tenant_id: string }>('SELECT tenant_id FROM mail.domains WHERE name = $1', [
+        name,
+      ]);
       if (existing.length) {
         throw new MailError({
           code: 'invalid_input',
-          reason: existing[0]!.tenant_id === tenantId ? `domain ${name} is already added` : `domain ${name} is claimed by another tenant`,
+          reason:
+            existing[0]?.tenant_id === tenantId
+              ? `domain ${name} is already added`
+              : `domain ${name} is claimed by another tenant`,
         });
       }
 
@@ -223,7 +237,13 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
         publicKey = pair.publicKeyBase64;
         sealedPrivate = seal(dkimKey, pair.privateKeyPem);
         records = [
-          { type: 'TXT', name: `${selector}._domainkey.${name}`, value: dkimTxtRecord(publicKey), purpose: 'dkim', required: true },
+          {
+            type: 'TXT',
+            name: `${selector}._domainkey.${name}`,
+            value: dkimTxtRecord(publicKey),
+            purpose: 'dkim',
+            required: true,
+          },
         ];
         if (transport.spfInclude) {
           records.push({
@@ -241,25 +261,45 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
         `INSERT INTO mail.domains
            (tenant_id, name, signing, provider_ref, dkim_selector, dkim_public_key, dkim_private_key, return_path_host, records)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb) RETURNING ${COLUMNS}`,
-        [tenantId, name, signing, providerRef, selector, publicKey, sealedPrivate, returnPathHost, JSON.stringify(records)],
+        [
+          tenantId,
+          name,
+          signing,
+          providerRef,
+          selector,
+          publicKey,
+          sealedPrivate,
+          returnPathHost,
+          JSON.stringify(records),
+        ],
       );
+      // biome-ignore lint/style/noNonNullAssertion: INSERT … RETURNING always yields one row
       return toDomain(rows[0]!);
     },
 
     async get(tenantId, id) {
-      const rows = await db.query<Row>(`SELECT ${COLUMNS} FROM mail.domains WHERE tenant_id = $1 AND id = $2`, [tenantId, id]);
+      const rows = await db.query<Row>(`SELECT ${COLUMNS} FROM mail.domains WHERE tenant_id = $1 AND id = $2`, [
+        tenantId,
+        id,
+      ]);
       return rows[0] ? toDomain(rows[0]) : null;
     },
 
     async find(tenantId, name) {
       const n = normaliseDomain(name);
       if (!n) return null;
-      const rows = await db.query<Row>(`SELECT ${COLUMNS} FROM mail.domains WHERE tenant_id = $1 AND name = $2`, [tenantId, n]);
+      const rows = await db.query<Row>(`SELECT ${COLUMNS} FROM mail.domains WHERE tenant_id = $1 AND name = $2`, [
+        tenantId,
+        n,
+      ]);
       return rows[0] ? toDomain(rows[0]) : null;
     },
 
     async list(tenantId) {
-      const rows = await db.query<Row>(`SELECT ${COLUMNS} FROM mail.domains WHERE tenant_id = $1 ORDER BY created_at DESC`, [tenantId]);
+      const rows = await db.query<Row>(
+        `SELECT ${COLUMNS} FROM mail.domains WHERE tenant_id = $1 ORDER BY created_at DESC`,
+        [tenantId],
+      );
       return rows.map(toDomain);
     },
 
@@ -275,7 +315,7 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
         `SELECT ${COLUMNS} FROM mail.domains
           WHERE status = 'pending' AND (last_checked_at IS NULL OR last_checked_at <= $1)
           ORDER BY last_checked_at NULLS FIRST LIMIT $2`,
-        [cutoff, o?.limit ?? 50],
+        [cutoff, clampLimit(o?.limit, 50, MAX_BATCH)],
       );
       const out: SendingDomain[] = [];
       for (const r of rows) out.push(await applyCheck(toDomain(r)));
@@ -293,7 +333,10 @@ export function createDomains(opts: DomainsOptions): DomainsApi {
         try {
           await transport.removeDomain(row.name, row.provider_ref);
         } catch (error) {
-          opts.logger?.warn('transport removeDomain failed; row already deleted', { name: row.name, error: String(error) });
+          opts.logger?.warn('transport removeDomain failed; row already deleted', {
+            name: row.name,
+            error: String(error),
+          });
         }
       }
       return true;

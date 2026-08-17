@@ -2,14 +2,12 @@
 
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
-export const sha256Hex = (value: string | Uint8Array): string =>
-  createHash('sha256').update(value).digest('hex');
+export const sha256Hex = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex');
 
 export const hmacSha256 = (key: string | Uint8Array, value: string | Uint8Array): Buffer =>
   createHmac('sha256', key).update(value).digest();
 
-export const safeEqual = (a: Uint8Array, b: Uint8Array): boolean =>
-  a.length === b.length && timingSafeEqual(a, b);
+export const safeEqual = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && timingSafeEqual(a, b);
 
 /** Parse a 64-hex-char key or explain what was expected. */
 export function keyFromHex(hex: string | undefined, what: string): Buffer {
@@ -29,9 +27,10 @@ export function seal(key: Buffer, plaintext: string): string {
 
 export function unseal(key: Buffer, sealed: string): string {
   const [iv, tag, cipher] = sealed.split(':').map((s) => Buffer.from(s, 'base64'));
-  const d = createDecipheriv('aes-256-gcm', key, iv!);
-  d.setAuthTag(tag!);
-  return Buffer.concat([d.update(cipher!), d.final()]).toString('utf8');
+  if (!iv || !tag || !cipher) throw new Error('mail-kit: sealed value is malformed (expected iv:tag:cipher)');
+  const d = createDecipheriv('aes-256-gcm', key, iv);
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(cipher), d.final()]).toString('utf8');
 }
 
 export const randomToken = (bytes = 24): string => randomBytes(bytes).toString('base64url');

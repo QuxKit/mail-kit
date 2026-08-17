@@ -34,7 +34,9 @@ export interface Mail extends MessagesApi {
   /** Everything a worker loop should do on a tick: due sends, due webhooks,
    *  pending domain checks. Call it every few seconds from one or more
    *  processes; each part claims its own rows. */
-  tick(now?: Date): Promise<{ sent: number; failed: number; retried: number; webhooks: number; domainsChecked: number }>;
+  tick(
+    now?: Date,
+  ): Promise<{ sent: number; failed: number; retried: number; webhooks: number; domainsChecked: number }>;
 }
 
 export function createMail(opts: MailOptions): Mail {
@@ -42,11 +44,29 @@ export function createMail(opts: MailOptions): Mail {
   const clock: Clock = opts.clock ?? (() => new Date());
   const fetchImpl: Fetch = opts.fetch ?? ((url, init) => globalThis.fetch(url, init) as unknown as ReturnType<Fetch>);
   const dns = opts.dns ?? lazyNodeDns();
+  const dnsLookup = opts.dns?.lookup;
 
   const suppression = createSuppression({ db: opts.db, clock });
-  const webhooks = createWebhooks({ db: opts.db, fetch: fetchImpl, clock, logger: opts.logger, maxAttempts: config.webhookMaxAttempts });
+  const webhooks = createWebhooks({
+    db: opts.db,
+    fetch: fetchImpl,
+    clock,
+    logger: opts.logger,
+    maxAttempts: config.webhookMaxAttempts,
+    resolve: dnsLookup ? dnsLookup.bind(opts.dns) : undefined,
+    allowInsecureHttp: config.allowInsecureHttp,
+    sealKey: config.dkimKey,
+  });
   const events = createEvents({ db: opts.db, suppression, webhooks, clock, logger: opts.logger });
-  const domains = createDomains({ db: opts.db, transport: opts.transport, dns, config, webhooks, clock, logger: opts.logger });
+  const domains = createDomains({
+    db: opts.db,
+    transport: opts.transport,
+    dns,
+    config,
+    webhooks,
+    clock,
+    logger: opts.logger,
+  });
   const messages = createMessages({
     db: opts.db,
     transport: opts.transport,

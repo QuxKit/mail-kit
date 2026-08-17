@@ -1,7 +1,7 @@
 {
   "name": "@quxkit/mail-kit",
   "version": "0.1.0",
-  "description": "Transactional email as a library — sending domains, idempotent sends, delivery events, suppression and signed webhooks, over a transport you choose.",
+  "description": "Transactional email as a library \u2014 sending domains, idempotent sends, delivery events, suppression and signed webhooks, over a transport you choose.",
   "license": "Apache-2.0",
   "author": "BRETT",
   "type": "module",
@@ -65,6 +65,14 @@
       "import": "./dist/memory.mjs",
       "require": "./dist/memory.cjs"
     },
+    "./pg": {
+      "types": {
+        "import": "./dist/pg.d.ts",
+        "require": "./dist/pg.d.cts"
+      },
+      "import": "./dist/pg.mjs",
+      "require": "./dist/pg.cjs"
+    },
     "./sql/*": "./sql/*",
     "./package.json": "./package.json"
   },
@@ -76,13 +84,19 @@
     "sql",
     "LICENSE",
     "NOTICE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
     "test": "tsx --test --test-concurrency=1 test/*.test.ts",
-    "prepack": "pnpm run build"
+    "test:coverage": "c8 tsx --test --test-concurrency=1 test/*.test.ts",
+    "check:harness": "tsx -e \"import('./test/harness.ts').then(() => console.log('harness imports ok'))\"",
+    "prepack": "pnpm run build",
+    "prepublishOnly": "pnpm run lint && pnpm run typecheck && pnpm run build && pnpm run test"
   },
   "peerDependencies": {
     "pg": "^8.11.0"
@@ -93,8 +107,10 @@
     }
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
     "@types/node": "^22.9.0",
     "@types/pg": "^8.21.0",
+    "c8": "^10.1.3",
     "pg": "^8.23.0",
     "tsup": "^8.5.1",
     "tsx": "^4.19.2",

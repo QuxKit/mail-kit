@@ -9,13 +9,14 @@
 // the window). Idempotency keys exist so the caller's retry does not become a
 // second message.
 
-import { parseAddress, parseAddressList, type ParsedAddress } from './address.ts';
+import { type ParsedAddress, parseAddress, parseAddressList } from './address.ts';
 import { sha256Hex } from './crypto.ts';
 import { dkimSign } from './dkim.ts';
 import type { DomainsApi } from './domains.ts';
 import { MailError } from './errors.ts';
-import { messageData, type EventsApi } from './events.ts';
-import { assertHeaderSafe, buildMime, newMessageId } from './mime.ts';
+import { type EventsApi, messageData } from './events.ts';
+import { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from './limits.ts';
+import { assertAttachmentSafe, assertHeaderSafe, buildMimeDetailed, newMessageId } from './mime.ts';
 import type { SuppressionApi } from './suppression.ts';
 import type {
   Attachment,
@@ -27,8 +28,8 @@ import type {
   Message,
   MessageStatus,
   SendInput,
-  SendOptions,
   SendingDomain,
+  SendOptions,
   SqlExecutor,
   TenantId,
 } from './types.ts';
@@ -48,6 +49,7 @@ export interface MessagesOptions {
 
 export interface ListMessagesOptions {
   status?: MessageStatus;
+  /** Page size; default 50, capped at `MAX_LIST_LIMIT` (200). */
   limit?: number;
   /** Page: rows created before this instant. */
   before?: Date;
@@ -56,7 +58,11 @@ export interface ListMessagesOptions {
 export interface MessagesApi {
   send(tenantId: TenantId, input: SendInput, opts?: SendOptions): Promise<Message>;
   /** Independent sends; one failing does not stop the rest. */
-  sendBatch(tenantId: TenantId, inputs: readonly SendInput[], opts?: SendOptions): Promise<Array<{ ok: true; message: Message } | { ok: false; error: MailError }>>;
+  sendBatch(
+    tenantId: TenantId,
+    inputs: readonly SendInput[],
+    opts?: SendOptions,
+  ): Promise<Array<{ ok: true; message: Message } | { ok: false; error: MailError }>>;
   get(tenantId: TenantId, id: string): Promise<Message | null>;
   list(tenantId: TenantId, opts?: ListMessagesOptions): Promise<Message[]>;
   /** A queued or scheduled message will not be sent. */
@@ -67,9 +73,15 @@ export interface MessagesApi {
    *  `render` builds from, exposed for a dashboard's detail view. */
   payload(tenantId: TenantId, id: string): Promise<StoredPayload | null>;
   /** Deliver everything due — queued, scheduled, or waiting on a retry. What a
-   *  worker calls in a loop. Safe to run from several processes. */
+   *  worker calls in a loop. Safe to run from several processes. `limit`
+   *  defaults to 50 and is capped at `MAX_BATCH` (500). */
   deliverPending(limit?: number, now?: Date): Promise<{ sent: number; failed: number; retried: number }>;
-  /** Rebuild the exact bytes for a stored message (dashboard "view source"). */
+  /**
+   * The bytes for a stored message (dashboard "view source"). For a sent
+   * message this is exactly what the transport was handed — the boundaries
+   * and DKIM signature are stored at send time. For one not yet sent it is
+   * what a send now would produce.
+   */
   render(tenantId: TenantId, id: string): Promise<Uint8Array>;
 }
 
@@ -123,12 +135,25 @@ interface Row {
   created_at: Date;
   updated_at: Date;
   sent_at: Date | null;
+  rendering: Rendering | null;
+}
+
+/**
+ * What `render` needs, beyond the payload, to reproduce the bytes the
+ * transport was handed: the multipart boundaries the builder drew, the Date
+ * header's instant, and the DKIM-Signature header exactly as signed (null
+ * when the transport signs). Written with the row's `sent` update.
+ */
+export interface Rendering {
+  boundaries: string[];
+  date: string;
+  dkimSignature: string | null;
 }
 
 const COLUMNS =
   'id, tenant_id, domain_id, status, from_address, to_addresses, cc_addresses, bcc_addresses, subject, message_id, ' +
   'provider_message_id, payload, content_hash, tags, idempotency_key, attempts, last_error, next_attempt_at, ' +
-  'suppressed_recipients, scheduled_at, created_at, updated_at, sent_at';
+  'suppressed_recipients, scheduled_at, created_at, updated_at, sent_at, rendering';
 
 const toMessage = (r: Row): Message => ({
   id: r.id,
@@ -153,29 +178,44 @@ const toMessage = (r: Row): Message => ({
 });
 
 const stored = (a: ParsedAddress): StoredAddress => ({ email: a.email, name: a.name });
-const parsed = (a: StoredAddress): ParsedAddress => ({ email: a.email, name: a.name, domain: a.email.slice(a.email.lastIndexOf('@') + 1) });
+const parsed = (a: StoredAddress): ParsedAddress => ({
+  email: a.email,
+  name: a.name,
+  domain: a.email.slice(a.email.lastIndexOf('@') + 1),
+});
 
 const attachmentBase64 = (a: Attachment): string =>
   typeof a.content === 'string' ? a.content : Buffer.from(a.content).toString('base64');
 
 /** Validate and normalise. Everything that can be rejected without the
  *  database is rejected here, so a bad request never leaves a row behind. */
-export function normaliseInput(input: SendInput): { payload: StoredPayload; from: ParsedAddress; tags: Record<string, string> } {
+export function normaliseInput(input: SendInput): {
+  payload: StoredPayload;
+  from: ParsedAddress;
+  tags: Record<string, string>;
+} {
   const from = parseAddress(input.from);
   const to = parseAddressList(input.to);
   const cc = parseAddressList(input.cc);
   const bcc = parseAddressList(input.bcc);
   const replyTo = parseAddressList(input.replyTo);
-  if (to.length === 0) throw new MailError({ code: 'invalid_input', reason: 'a message needs at least one To recipient' });
-  if (to.length + cc.length + bcc.length > 50) throw new MailError({ code: 'invalid_input', reason: 'at most 50 recipients per message' });
+  if (to.length === 0)
+    throw new MailError({ code: 'invalid_input', reason: 'a message needs at least one To recipient' });
+  if (to.length + cc.length + bcc.length > 50)
+    throw new MailError({ code: 'invalid_input', reason: 'at most 50 recipients per message' });
   if (typeof input.subject !== 'string') throw new MailError({ code: 'invalid_input', reason: 'subject is required' });
   assertHeaderSafe('Subject', input.subject);
-  if (!input.text && !input.html) throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
+  if (!input.text && !input.html)
+    throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
   for (const [k, v] of Object.entries(input.headers ?? {})) assertHeaderSafe(k, v);
+  for (const a of input.attachments ?? []) assertAttachmentSafe(a);
   const tags: Record<string, string> = {};
   for (const [k, v] of Object.entries(input.tags ?? {})) {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(k) || !/^[A-Za-z0-9_-]{0,256}$/.test(v)) {
-      throw new MailError({ code: 'invalid_input', reason: `tag ${JSON.stringify(k)} must be [A-Za-z0-9_-], name ≤64 and value ≤256 chars` });
+      throw new MailError({
+        code: 'invalid_input',
+        reason: `tag ${JSON.stringify(k)} must be [A-Za-z0-9_-], name ≤64 and value ≤256 chars`,
+      });
     }
     tags[k] = v;
   }
@@ -213,13 +253,18 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
     const domain = await domains.find(tenantId, from.domain);
     if (!requireVerified) return domain;
     if (!domain) throw new MailError({ code: 'domain_not_verified', domain: from.domain, status: 'missing' });
-    if (domain.status !== 'verified') throw new MailError({ code: 'domain_not_verified', domain: from.domain, status: domain.status });
+    if (domain.status !== 'verified')
+      throw new MailError({ code: 'domain_not_verified', domain: from.domain, status: domain.status });
     return domain;
   };
 
-  const buildRaw = async (row: Row, at: Date): Promise<{ raw: Uint8Array; domain: SendingDomain | null }> => {
+  const buildRaw = async (
+    row: Row,
+    at: Date,
+    reuse?: Rendering | null,
+  ): Promise<{ raw: Uint8Array; domain: SendingDomain | null; rendering: Rendering }> => {
     const p = row.payload;
-    let raw = buildMime({
+    const built = buildMimeDetailed({
       from: parsed(p.from),
       to: p.to.map(parsed),
       cc: p.cc.map(parsed),
@@ -237,21 +282,35 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       listUnsubscribe: p.listUnsubscribe ?? undefined,
       messageId: row.message_id,
       date: at,
+      boundaries: reuse?.boundaries,
     });
+    let raw = built.raw;
+    let dkimSignature: string | null = null;
+    if (reuse) {
+      // Reproducing a send: the signature is the one that went out, verbatim —
+      // not a fresh one over a possibly rotated key.
+      if (reuse.dkimSignature) raw = Buffer.concat([Buffer.from(`${reuse.dkimSignature}\r\n`, 'latin1'), raw]);
+      return { raw, domain: null, rendering: { ...reuse, boundaries: built.boundaries } };
+    }
     let domain: SendingDomain | null = null;
     if (row.domain_id) domain = await domains.get(row.tenant_id, row.domain_id);
     if (domain) {
       const signer = await domains.signerFor(domain);
-      if (signer) raw = dkimSign(raw, { ...signer, now: at });
+      if (signer) {
+        const signed = dkimSign(raw, { ...signer, now: at });
+        // dkimSign prepends exactly one folded header + CRLF to the input.
+        dkimSignature = Buffer.from(signed.subarray(0, signed.length - raw.length - 2)).toString('latin1');
+        raw = signed;
+      }
     }
-    return { raw, domain };
+    return { raw, domain, rendering: { boundaries: built.boundaries, date: at.toISOString(), dkimSignature } };
   };
 
   /** One delivery attempt for a row that has already been claimed. */
   const attempt = async (row: Row, now: Date): Promise<'sent' | 'retried' | 'failed'> => {
     const attemptNo = row.attempts + 1;
     try {
-      const { raw, domain } = await buildRaw(row, now);
+      const { raw, domain, rendering } = await buildRaw(row, now);
       const returnPath = domain?.returnPathHost ? `bounces@${domain.returnPathHost}` : row.from_address;
       const recipients = [...new Set([...row.to_addresses, ...row.cc_addresses, ...row.bcc_addresses])];
       const result = await transport.send({
@@ -266,27 +325,30 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       });
       await db.query(
         `UPDATE mail.messages
-            SET status = 'sent', provider_message_id = $2, attempts = $3, sent_at = $4, next_attempt_at = NULL, last_error = NULL
+            SET status = 'sent', provider_message_id = $2, attempts = $3, sent_at = $4, next_attempt_at = NULL,
+                last_error = NULL, rendering = $5::jsonb
           WHERE id = $1`,
-        [row.id, result.providerMessageId, attemptNo, now],
+        [row.id, result.providerMessageId, attemptNo, now, JSON.stringify(rendering)],
       );
       await events.record([
         { type: 'sent', messageId: row.id, providerMessageId: result.providerMessageId, at: now },
-        ...(result.rejected ?? []).map((r): DeliveryEvent => ({
-          type: 'bounced',
-          messageId: row.id,
-          providerMessageId: result.providerMessageId,
-          recipient: r.recipient,
-          at: now,
-          bounce: { kind: 'hard', subtype: 'RejectedAtSubmission', diagnostic: r.detail },
-        })),
+        ...(result.rejected ?? []).map(
+          (r): DeliveryEvent => ({
+            type: 'bounced',
+            messageId: row.id,
+            providerMessageId: result.providerMessageId,
+            recipient: r.recipient,
+            at: now,
+            bounce: { kind: 'hard', subtype: 'RejectedAtSubmission', diagnostic: r.detail },
+          }),
+        ),
       ]);
       return 'sent';
     } catch (error) {
       const retryable = MailError.hasCode(error, 'transport') && error.failure.retryable;
       const detail = error instanceof Error ? error.message : String(error);
       if (retryable && attemptNo < maxAttempts) {
-        const delay = SEND_RETRY_SCHEDULE_S[Math.min(attemptNo - 1, SEND_RETRY_SCHEDULE_S.length - 1)]!;
+        const delay = SEND_RETRY_SCHEDULE_S[Math.min(attemptNo - 1, SEND_RETRY_SCHEDULE_S.length - 1)] ?? 0;
         await db.query(
           `UPDATE mail.messages SET status = 'queued', attempts = $2, last_error = $3, next_attempt_at = $4 WHERE id = $1`,
           [row.id, attemptNo, detail, new Date(now.getTime() + delay * 1000)],
@@ -305,7 +367,10 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
   };
 
   const getRow = async (tenantId: TenantId, id: string): Promise<Row | null> => {
-    const rows = await db.query<Row>(`SELECT ${COLUMNS} FROM mail.messages WHERE tenant_id = $1 AND id = $2`, [tenantId, id]);
+    const rows = await db.query<Row>(`SELECT ${COLUMNS} FROM mail.messages WHERE tenant_id = $1 AND id = $2`, [
+      tenantId,
+      id,
+    ]);
     return rows[0] ?? null;
   };
 
@@ -326,11 +391,13 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       const dropped = all.filter((e) => suppressed.has(e.toLowerCase()));
       const stored: StoredPayload = { ...payload, to, cc, bcc };
 
-      const contentHash = sha256Hex(JSON.stringify({ payload: stored, tags, scheduledAt: input.scheduledAt?.toISOString() ?? null }));
+      const contentHash = sha256Hex(
+        JSON.stringify({ payload: stored, tags, scheduledAt: input.scheduledAt?.toISOString() ?? null }),
+      );
       const nothingLeft = to.length + cc.length + bcc.length === 0;
-      const scheduled = input.scheduledAt && input.scheduledAt.getTime() > now.getTime();
-      const status: MessageStatus = nothingLeft ? 'suppressed' : scheduled ? 'scheduled' : 'queued';
-      const nextAttempt = nothingLeft ? null : scheduled ? input.scheduledAt! : now;
+      const scheduledAt = input.scheduledAt && input.scheduledAt.getTime() > now.getTime() ? input.scheduledAt : null;
+      const status: MessageStatus = nothingLeft ? 'suppressed' : scheduledAt ? 'scheduled' : 'queued';
+      const nextAttempt = nothingLeft ? null : (scheduledAt ?? now);
 
       const inserted = await db.query<Row>(
         `INSERT INTO mail.messages
@@ -366,8 +433,10 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
           `SELECT ${COLUMNS} FROM mail.messages WHERE tenant_id = $1 AND idempotency_key = $2`,
           [tenantId, input.idempotencyKey],
         );
-        const prior = existing[0]!;
-        if (prior.content_hash !== contentHash) throw new MailError({ code: 'idempotency_conflict', key: input.idempotencyKey! });
+        const prior = existing[0];
+        const key = input.idempotencyKey ?? '';
+        if (!prior) throw new MailError({ code: 'not_found', what: 'message', id: key });
+        if (prior.content_hash !== contentHash) throw new MailError({ code: 'idempotency_conflict', key });
         return toMessage(prior);
       }
 
@@ -380,7 +449,7 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
         );
         if (claimed[0]) {
           await attempt(claimed[0], now);
-          row = (await getRow(tenantId, row.id))!;
+          row = (await getRow(tenantId, row.id)) ?? row;
         }
       }
       return toMessage(row);
@@ -409,7 +478,7 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
         `SELECT ${COLUMNS} FROM mail.messages
           WHERE tenant_id = $1 AND ($2::text IS NULL OR status = $2) AND ($3::timestamptz IS NULL OR created_at < $3)
           ORDER BY created_at DESC LIMIT $4`,
-        [tenantId, o?.status ?? null, o?.before ?? null, o?.limit ?? 50],
+        [tenantId, o?.status ?? null, o?.before ?? null, clampLimit(o?.limit, 50, MAX_LIST_LIMIT)],
       );
       return rows.map(toMessage);
     },
@@ -458,7 +527,7 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
              WHERE status IN ('queued', 'scheduled') AND next_attempt_at <= $1
              ORDER BY next_attempt_at LIMIT $3 FOR UPDATE SKIP LOCKED)
           RETURNING ${COLUMNS}`,
-        [now, new Date(now.getTime() + LEASE_S * 1000), limit],
+        [now, new Date(now.getTime() + LEASE_S * 1000), clampLimit(limit, 50, MAX_BATCH)],
       );
       for (const row of claimed) {
         const r = await attempt(row, now);
@@ -470,6 +539,11 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
     async render(tenantId, id) {
       const row = await getRow(tenantId, id);
       if (!row) throw new MailError({ code: 'not_found', what: 'message', id });
+      // Sent: the boundaries and signature stored at send time reproduce the
+      // bytes the transport was handed. Not yet sent (or sent before
+      // `rendering` existed): a fresh build with a fresh signature, which is
+      // what a send now would produce.
+      if (row.rendering) return (await buildRaw(row, new Date(row.rendering.date), row.rendering)).raw;
       return (await buildRaw(row, row.sent_at ?? row.created_at)).raw;
     },
   };

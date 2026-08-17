@@ -4,80 +4,80 @@
 // (`@quxkit/mail-kit/ses`, `/smtp`, `/memory`) so an app that uses one does
 // not compile the others.
 
-export { createMail } from './instance.ts';
-export type { Mail, MailOptions } from './instance.ts';
-
-export { createMessages, normaliseInput, SEND_RETRY_SCHEDULE_S } from './messages.ts';
-export type { MessagesApi, MessagesOptions, ListMessagesOptions, StoredPayload } from './messages.ts';
-
-export { createDomains, recordSatisfied } from './domains.ts';
-export type { DomainsApi, DomainsOptions, LocalSigner } from './domains.ts';
-
-export { createEvents, nextStatus, messageData } from './events.ts';
-export type { EventsApi, EventsOptions } from './events.ts';
-
-export { createSuppression, normaliseForSuppression } from './suppression.ts';
-export type { SuppressionApi, SuppressionOptions, AddSuppressionInput } from './suppression.ts';
-
-export {
-  createWebhooks,
-  signWebhook,
-  verifyWebhookSignature,
-  RETRY_SCHEDULE_S as WEBHOOK_RETRY_SCHEDULE_S,
-  ALL_WEBHOOK_EVENTS,
-} from './webhooks.ts';
-export type { WebhooksApi, WebhooksOptions, CreateWebhookInput, WebhookPayload, VerifyOptions } from './webhooks.ts';
-
-export { buildMime, quotedPrintable, newMessageId, rfc5322Date } from './mime.ts';
-export type { MimeInput } from './mime.ts';
-
-export { parseAddress, parseAddressList, renderAddress, normaliseDomain } from './address.ts';
 export type { ParsedAddress } from './address.ts';
-
-export { generateDkimKey, dkimSign, dkimVerify, dkimTxtRecord, DEFAULT_SIGNED_HEADERS } from './dkim.ts';
+export { normaliseDomain, parseAddress, parseAddressList, renderAddress } from './address.ts';
 export type { DkimKeyPair, DkimSignOptions, DkimVerifyResult } from './dkim.ts';
-
-export { nodeDnsResolver } from './dns.ts';
-
+export { DEFAULT_SIGNED_HEADERS, dkimSign, dkimTxtRecord, dkimVerify, generateDkimKey } from './dkim.ts';
+export { nodeDnsResolver, nodeLookup } from './dns.ts';
+export type { DomainsApi, DomainsOptions, LocalSigner } from './domains.ts';
+export { createDomains, recordSatisfied } from './domains.ts';
+export type { MailErrorCode, MailFailure } from './errors.ts';
 export { MailError } from './errors.ts';
-export type { MailFailure, MailErrorCode } from './errors.ts';
-
+export type { EventsApi, EventsOptions } from './events.ts';
+export { createEvents, messageData, nextStatus } from './events.ts';
+export type { Mail, MailOptions } from './instance.ts';
+export { createMail } from './instance.ts';
+export { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from './limits.ts';
+export type { ListMessagesOptions, MessagesApi, MessagesOptions, Rendering, StoredPayload } from './messages.ts';
+export { createMessages, normaliseInput, SEND_RETRY_SCHEDULE_S } from './messages.ts';
+export type { MimeInput } from './mime.ts';
+export {
+  assertAttachmentSafe,
+  buildMime,
+  buildMimeDetailed,
+  newMessageId,
+  quotedPrintable,
+  rfc5322Date,
+} from './mime.ts';
+export type { HostResolver, UrlGuardOptions } from './ssrf.ts';
+export { assertWebhookUrlAllowed, forbiddenAddressReason } from './ssrf.ts';
+export type { AddSuppressionInput, SuppressionApi, SuppressionOptions } from './suppression.ts';
+export { createSuppression, normaliseForSuppression } from './suppression.ts';
 export type {
-  SqlExecutor,
+  AddDomainInput,
+  Address,
+  Attachment,
   Clock,
-  Logger,
+  CreatedWebhook,
+  DeliveryEvent,
+  DeliveryEventType,
+  DnsRecord,
+  DnsRecordPurpose,
+  DnsRecordType,
+  DnsResolver,
+  DomainRegistration,
+  DomainStatus,
   Fetch,
   FetchInit,
   FetchResponse,
-  TenantId,
-  MailConfig,
-  Address,
-  Attachment,
   ListUnsubscribe,
-  SendInput,
-  SendOptions,
+  Logger,
+  MailConfig,
+  MailTransport,
   Message,
   MessageStatus,
-  DnsRecord,
-  DnsRecordType,
-  DnsRecordPurpose,
-  DomainStatus,
-  RecordCheck,
-  SendingDomain,
-  AddDomainInput,
-  DnsResolver,
   OutboundEnvelope,
-  TransportResult,
-  DomainRegistration,
-  MailTransport,
-  DeliveryEvent,
-  DeliveryEventType,
+  RecordCheck,
   RecordedEvent,
+  SendInput,
+  SendingDomain,
+  SendOptions,
+  SqlExecutor,
   Suppression,
   SuppressionReason,
-  WebhookEventType,
-  WebhookSubscription,
-  CreatedWebhook,
+  TenantId,
+  TransportResult,
   WebhookDelivery,
   WebhookDeliveryStatus,
+  WebhookEventType,
+  WebhookSubscription,
 } from './types.ts';
+export type { CreateWebhookInput, VerifyOptions, WebhookPayload, WebhooksApi, WebhooksOptions } from './webhooks.ts';
+export {
+  ALL_WEBHOOK_EVENTS,
+  createWebhooks,
+  enqueueWebhookDeliveries,
+  RETRY_SCHEDULE_S as WEBHOOK_RETRY_SCHEDULE_S,
+  signWebhook,
+  verifyWebhookSignature,
+} from './webhooks.ts';
