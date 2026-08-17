@@ -28,6 +28,42 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
   const T1 = 'tenant_a';
   const T2 = 'tenant_b';
 
+  describe('the shipped pg adapter', () => {
+    it('pins a connection per transaction and turns nested transactions into savepoints', async () => {
+      await h.db.query('CREATE TABLE IF NOT EXISTS mail.pg_probe (v text)');
+      await h.db.query('DELETE FROM mail.pg_probe');
+      await assert.rejects(
+        h.db.transaction(async (tx) => {
+          await tx.query("INSERT INTO mail.pg_probe VALUES ('outer')");
+          await tx
+            .transaction(async (inner) => {
+              await inner.query("INSERT INTO mail.pg_probe VALUES ('inner')");
+              throw new Error('inner boom');
+            })
+            .catch(() => {});
+          const [row] = await tx.query<{ n: string }>('SELECT count(*)::text AS n FROM mail.pg_probe');
+          assert.equal(row!.n, '1', 'the inner insert was rolled back to the savepoint, the outer survives');
+          await tx.query("INSERT INTO mail.pg_probe VALUES ('after')");
+          throw new Error('outer boom');
+        }),
+        /outer boom/,
+      );
+      const [after] = await h.db.query<{ n: string }>('SELECT count(*)::text AS n FROM mail.pg_probe');
+      assert.equal(after!.n, '0', 'the outer rollback covers everything');
+      const kept = await h.db.transaction(async (tx) => {
+        await tx.query("INSERT INTO mail.pg_probe VALUES ('kept')");
+        return tx.transaction(async (inner) => {
+          await inner.query("INSERT INTO mail.pg_probe VALUES ('kept-inner')");
+          return 'ok';
+        });
+      });
+      assert.equal(kept, 'ok');
+      const [done] = await h.db.query<{ n: string }>('SELECT count(*)::text AS n FROM mail.pg_probe');
+      assert.equal(done!.n, '2');
+      await h.db.query('DROP TABLE mail.pg_probe');
+    });
+  });
+
   describe('domains, locally signed (relay-style transport)', () => {
     const dns = new FakeDns();
     const fetch = new FakeFetch();

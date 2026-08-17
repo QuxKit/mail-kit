@@ -76,6 +76,7 @@ export type { CreateWebhookInput, VerifyOptions, WebhookPayload, WebhooksApi, We
 export {
   ALL_WEBHOOK_EVENTS,
   createWebhooks,
+  enqueueWebhookDeliveries,
   RETRY_SCHEDULE_S as WEBHOOK_RETRY_SCHEDULE_S,
   signWebhook,
   verifyWebhookSignature,
