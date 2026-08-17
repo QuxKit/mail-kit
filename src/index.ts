@@ -38,6 +38,8 @@ export {
   quotedPrintable,
   rfc5322Date,
 } from './mime.ts';
+export type { ConsumeResult, Quota, QuotaLimits, QuotasApi, QuotasOptions } from './quotas.ts';
+export { createQuotas } from './quotas.ts';
 export type { HostResolver, UrlGuardOptions } from './ssrf.ts';
 export { assertWebhookUrlAllowed, forbiddenAddressReason } from './ssrf.ts';
 export type { AddSuppressionInput, SuppressionApi, SuppressionOptions, SuppressionScope } from './suppression.ts';

@@ -10,6 +10,7 @@
 import { createDomains, type DomainsApi } from './domains.ts';
 import { createEvents, type EventsApi } from './events.ts';
 import { createMessages, type MessagesApi } from './messages.ts';
+import { createQuotas, type QuotasApi } from './quotas.ts';
 import { createSuppression, type SuppressionApi } from './suppression.ts';
 import type { Clock, DnsResolver, Fetch, Logger, MailConfig, MailTransport, SqlExecutor } from './types.ts';
 import { createUnsubscribe, type UnsubscribeApi } from './unsubscribe.ts';
@@ -33,6 +34,7 @@ export interface Mail extends MessagesApi {
   webhooks: WebhooksApi;
   events: EventsApi;
   unsubscribe: UnsubscribeApi;
+  quotas: QuotasApi;
   /** Everything a worker loop should do on a tick: due sends, due webhooks,
    *  pending domain checks. Call it every few seconds from one or more
    *  processes; each part claims its own rows. */
@@ -50,6 +52,7 @@ export function createMail(opts: MailOptions): Mail {
 
   const suppression = createSuppression({ db: opts.db, clock });
   const unsubscribe = createUnsubscribe({ suppression, config });
+  const quotas = createQuotas({ db: opts.db, config, clock });
   const webhooks = createWebhooks({
     db: opts.db,
     fetch: fetchImpl,
@@ -78,6 +81,7 @@ export function createMail(opts: MailOptions): Mail {
     events,
     webhooks,
     unsubscribe,
+    quotas,
     config,
     clock,
     logger: opts.logger,
@@ -90,6 +94,7 @@ export function createMail(opts: MailOptions): Mail {
     webhooks,
     events,
     unsubscribe,
+    quotas,
     async tick(now = clock()) {
       const s = await messages.deliverPending(50, now);
       const w = await webhooks.deliverPending(50, now);

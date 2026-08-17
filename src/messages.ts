@@ -17,6 +17,7 @@ import { MailError } from './errors.ts';
 import { type EventsApi, messageData } from './events.ts';
 import { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from './limits.ts';
 import { assertAttachmentSafe, assertHeaderSafe, buildMimeDetailed, newMessageId } from './mime.ts';
+import type { QuotasApi } from './quotas.ts';
 import type { SuppressionApi } from './suppression.ts';
 import type {
   Attachment,
@@ -45,6 +46,8 @@ export interface MessagesOptions {
   webhooks: WebhooksApi;
   /** Mints the automatic `List-Unsubscribe` token when `config.unsubscribeUrl` is set. */
   unsubscribe?: UnsubscribeApi;
+  /** Enforces per-tenant send quotas at `send`. Absent: no quota. */
+  quotas?: QuotasApi;
   config: MailConfig;
   clock?: Clock;
   logger?: Logger;
@@ -305,7 +308,7 @@ export function normaliseInput(input: SendInput): {
 }
 
 export function createMessages(opts: MessagesOptions): MessagesApi {
-  const { db, transport, domains, suppression, events, webhooks, config, unsubscribe } = opts;
+  const { db, transport, domains, suppression, events, webhooks, config, unsubscribe, quotas } = opts;
   const clock: Clock = opts.clock ?? (() => new Date());
   const requireVerified = config.requireVerifiedDomain ?? true;
   const maxAttempts = config.maxAttempts ?? SEND_RETRY_SCHEDULE_S.length;
@@ -471,6 +474,38 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       const status: MessageStatus = nothingLeft ? 'suppressed' : scheduledAt ? 'scheduled' : 'queued';
       const nextAttempt = nothingLeft ? null : (scheduledAt ?? now);
 
+      const priorByKey = async (): Promise<Row | null> => {
+        if (input.idempotencyKey === undefined) return null;
+        const existing = await db.query<Row>(
+          `SELECT ${COLUMNS} FROM mail.messages WHERE tenant_id = $1 AND idempotency_key = $2`,
+          [tenantId, input.idempotencyKey],
+        );
+        return existing[0] ?? null;
+      };
+      const replay = (prior: Row): Message => {
+        if (prior.content_hash !== contentHash)
+          throw new MailError({ code: 'idempotency_conflict', key: input.idempotencyKey ?? '' });
+        return toMessage(prior);
+      };
+
+      // Quota: charged when a message is accepted (not when it leaves), for
+      // one that will actually go out. A keyed retry is looked up first so
+      // it does not spend a token; a refused send leaves no row.
+      if (quotas && !nothingLeft) {
+        const prior = await priorByKey();
+        if (prior) return replay(prior);
+        const q = await quotas.consume(tenantId, 1, now);
+        if (!q.ok) {
+          throw new MailError({
+            code: 'quota_exceeded',
+            tenantId,
+            window: q.window,
+            limit: q.limit,
+            retryAfterMs: q.retryAfterMs,
+          });
+        }
+      }
+
       const inserted = await db.query<Row>(
         `INSERT INTO mail.messages
            (tenant_id, domain_id, status, from_address, to_addresses, cc_addresses, bcc_addresses, subject, message_id,
@@ -501,15 +536,9 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       let row = inserted[0];
       if (!row) {
         // The key exists. Same content → that message; different → conflict.
-        const existing = await db.query<Row>(
-          `SELECT ${COLUMNS} FROM mail.messages WHERE tenant_id = $1 AND idempotency_key = $2`,
-          [tenantId, input.idempotencyKey],
-        );
-        const prior = existing[0];
-        const key = input.idempotencyKey ?? '';
-        if (!prior) throw new MailError({ code: 'not_found', what: 'message', id: key });
-        if (prior.content_hash !== contentHash) throw new MailError({ code: 'idempotency_conflict', key });
-        return toMessage(prior);
+        const prior = await priorByKey();
+        if (!prior) throw new MailError({ code: 'not_found', what: 'message', id: input.idempotencyKey ?? '' });
+        return replay(prior);
       }
 
       if (row.status === 'queued' && !o?.defer) {

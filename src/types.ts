@@ -113,6 +113,13 @@ export interface MailConfig {
    * already. Mount `mail.unsubscribe.handleOneClick` at that URL.
    */
   unsubscribeUrl?: string;
+  /**
+   * Default send quota for every tenant without its own (`mail.quotas.set`):
+   * token buckets of `perMinute` and `perDay` sends. Absent or `null` means
+   * no limit. `send` refuses with `quota_exceeded` (+ `retryAfterMs`) when a
+   * bucket is empty; the message row is not written.
+   */
+  quotas?: { perMinute?: number | null; perDay?: number | null };
 }
 
 // --- addresses and messages -------------------------------------------------

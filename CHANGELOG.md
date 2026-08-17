@@ -7,6 +7,10 @@ All notable changes to `@quxkit/mail-kit` are recorded here. The format is
 ## [Unreleased]
 
 ### Added
+- Per-tenant send quotas: `mail.quotas.set/get/consume` (`createQuotas`,
+  `QuotaLimits`, `Quota`, `ConsumeResult`), `MailConfig.quotas` default,
+  `send()` → typed `quota_exceeded { tenantId, window, limit, retryAfterMs }`
+  before any row is written; `sql/005_quotas.sql` (`mail.quotas`).
 - `messages.search(query, page)`: filter by `to`, `subject`, `tag`, `status`,
   `sentAfter/Before`, `createdAfter/Before`; keyset paging with an opaque
   cursor (`SearchQuery`, `SearchPage`, `SearchResult`); `sql/004_search.sql`
