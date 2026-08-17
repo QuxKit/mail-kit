@@ -1,4 +1,5 @@
--- mail-kit 002: hardening. Delivery-event de-duplication.
+-- mail-kit 002: hardening. Delivery-event de-duplication; what render() needs
+-- to reproduce a sent message exactly.
 --
 --   psql -v ON_ERROR_STOP=1 -f sql/002_hardening.sql
 --
@@ -23,3 +24,9 @@
 CREATE UNIQUE INDEX IF NOT EXISTS events_dedup_idx
   ON mail.events (provider_message_id, COALESCE(message_id::text, ''), type, COALESCE(recipient, ''), occurred_at)
   WHERE provider_message_id IS NOT NULL;
+
+-- What `render` needs to give back exactly the bytes the transport was
+-- handed: the multipart boundaries the builder drew, the Date header's
+-- instant, and the DKIM-Signature header as signed. Written with the `sent`
+-- update; NULL for messages not yet sent (render then builds fresh).
+ALTER TABLE mail.messages ADD COLUMN IF NOT EXISTS rendering jsonb;

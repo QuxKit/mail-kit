@@ -25,6 +25,12 @@ export interface MimeInput {
   listUnsubscribe?: ListUnsubscribe;
   messageId: string;
   date: Date;
+  /**
+   * Multipart boundaries to use, in the order `buildMimeDetailed` reported
+   * them, instead of fresh random ones — what makes a rebuild byte-identical
+   * to the original. Extra entries are ignored; missing ones are generated.
+   */
+  boundaries?: readonly string[];
 }
 
 const CRLF = '\r\n';
@@ -116,7 +122,27 @@ export function base64Lines(bytes: Uint8Array): string {
   return lines.join(CRLF);
 }
 
-const boundary = (): string => `----=_qk_${randomBytes(12).toString('hex')}`;
+const newBoundary = (): string => `----=_qk_${randomBytes(12).toString('hex')}`;
+
+/** Hands out boundaries: the caller's first, then fresh ones; records all. */
+class Boundaries {
+  used: string[] = [];
+  private queue: string[];
+  constructor(preset: readonly string[] = []) {
+    this.queue = [...preset];
+  }
+  next(): string {
+    const b = this.queue.shift() ?? newBoundary();
+    if (!/^[0-9A-Za-z'()+_,\-./:=?]{1,70}$/.test(b) || b.endsWith(' ')) {
+      throw new MailError({
+        code: 'invalid_input',
+        reason: `multipart boundary ${JSON.stringify(b)} is not RFC 2046 bchars`,
+      });
+    }
+    this.used.push(b);
+    return b;
+  }
+}
 
 /** Fold a header at 78 chars on whitespace where it can (RFC 5322 §2.2.3). */
 function fold(name: string, value: string): string {
@@ -220,15 +246,21 @@ function attachmentPart(a: Attachment): string {
   );
 }
 
-function multipart(subtype: string, parts: string[]): string {
-  const b = boundary();
+function multipart(bounds: Boundaries, subtype: string, parts: string[]): string {
+  const b = bounds.next();
   const body = `${parts.map((p) => `--${b}${CRLF}${p}`).join(CRLF)}${CRLF}--${b}--`;
   return `Content-Type: multipart/${subtype}; boundary="${b}"${CRLF}${CRLF}${body}`;
 }
 
-/** Build the message. Returns the bytes and the sorted header names that
- *  were written, which the DKIM signer uses to decide what to sign. */
+/** Build the message. */
 export function buildMime(input: MimeInput): Uint8Array {
+  return buildMimeDetailed(input).raw;
+}
+
+/** Build the message and report the multipart boundaries used, in
+ *  consumption order, so the same bytes can be rebuilt later (`input.boundaries`). */
+export function buildMimeDetailed(input: MimeInput): { raw: Uint8Array; boundaries: string[] } {
+  const bounds = new Boundaries(input.boundaries);
   if (!input.text && !input.html)
     throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
   if (input.to.length === 0)
@@ -278,17 +310,17 @@ export function buildMime(input: MimeInput): Uint8Array {
 
   const htmlPart = input.html
     ? inline.length
-      ? multipart('related', [textPart('text/html', input.html), ...inline.map(attachmentPart)])
+      ? multipart(bounds, 'related', [textPart('text/html', input.html), ...inline.map(attachmentPart)])
       : textPart('text/html', input.html)
     : null;
   const plainPart = input.text ? textPart('text/plain', input.text) : null;
 
-  if (plainPart && htmlPart) body = multipart('alternative', [plainPart, htmlPart]);
+  if (plainPart && htmlPart) body = multipart(bounds, 'alternative', [plainPart, htmlPart]);
   else if (plainPart) body = plainPart;
   else if (htmlPart) body = htmlPart;
   else throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
 
-  if (attached.length) body = multipart('mixed', [body, ...attached.map(attachmentPart)]);
+  if (attached.length) body = multipart(bounds, 'mixed', [body, ...attached.map(attachmentPart)]);
 
-  return Buffer.from(headers.join(CRLF) + CRLF + body + CRLF, 'utf8');
+  return { raw: Buffer.from(headers.join(CRLF) + CRLF + body + CRLF, 'utf8'), boundaries: bounds.used };
 }

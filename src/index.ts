@@ -17,10 +17,17 @@ export type { EventsApi, EventsOptions } from './events.ts';
 export { createEvents, messageData, nextStatus } from './events.ts';
 export type { Mail, MailOptions } from './instance.ts';
 export { createMail } from './instance.ts';
-export type { ListMessagesOptions, MessagesApi, MessagesOptions, StoredPayload } from './messages.ts';
+export type { ListMessagesOptions, MessagesApi, MessagesOptions, Rendering, StoredPayload } from './messages.ts';
 export { createMessages, normaliseInput, SEND_RETRY_SCHEDULE_S } from './messages.ts';
 export type { MimeInput } from './mime.ts';
-export { assertAttachmentSafe, buildMime, newMessageId, quotedPrintable, rfc5322Date } from './mime.ts';
+export {
+  assertAttachmentSafe,
+  buildMime,
+  buildMimeDetailed,
+  newMessageId,
+  quotedPrintable,
+  rfc5322Date,
+} from './mime.ts';
 export type { HostResolver, UrlGuardOptions } from './ssrf.ts';
 export { assertWebhookUrlAllowed, forbiddenAddressReason } from './ssrf.ts';
 export type { AddSuppressionInput, SuppressionApi, SuppressionOptions } from './suppression.ts';

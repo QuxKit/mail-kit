@@ -129,6 +129,43 @@ describe('mail-kit', { skip: harness === null ? SKIP_REASON : false }, () => {
       assert.equal(rendered, sent.text);
     });
 
+    it('render() returns exactly the bytes that were sent — boundaries and DKIM signature included', async () => {
+      transport.clear();
+      const m = await mail.send(T1, {
+        from: 'ada@example.com',
+        to: 'bob@example.org',
+        subject: 'multipart',
+        text: 'plain',
+        html: '<p>rich <img src="cid:logo"></p>',
+        attachments: [
+          { filename: 'logo.png', content: Buffer.from('PNG'), contentType: 'image/png', contentId: 'logo' },
+          { filename: 'invoice.pdf', content: Buffer.from('%PDF'), contentType: 'application/pdf' },
+        ],
+      });
+      assert.equal(m.status, 'sent');
+      const sentRaw = Buffer.from(transport.sent[0]!.envelope.raw);
+      assert.equal((sentRaw.toString().match(/boundary="/g) ?? []).length, 3, 'mixed > alternative > related');
+      assert.match(sentRaw.toString(), /^DKIM-Signature: /);
+      const rendered = Buffer.from(await mail.render(T1, m.id));
+      assert.ok(rendered.equals(sentRaw), 'byte-identical to what the transport was handed');
+      // still identical after the clock moves and (if it were rotated) the key would differ
+      now = new Date(now.getTime() + 60_000);
+      assert.ok(Buffer.from(await mail.render(T1, m.id)).equals(sentRaw));
+      now = new Date(now.getTime() - 60_000);
+      // an unsent (scheduled) message renders a fresh build
+      const later = await mail.send(T1, {
+        from: 'ada@example.com',
+        to: 'bob@example.org',
+        subject: 'later',
+        text: 'a',
+        html: '<b>a</b>',
+        scheduledAt: new Date(now.getTime() + 3_600_000),
+      });
+      assert.equal(later.status, 'scheduled');
+      assert.match(Buffer.from(await mail.render(T1, later.id)).toString(), /multipart\/alternative/);
+      await mail.cancel(T1, later.id);
+    });
+
     it('removes a domain', async () => {
       const [d] = await mail.domains.list(T1);
       assert.equal(await mail.domains.remove(T1, d!.id), true);

@@ -15,7 +15,7 @@ import { dkimSign } from './dkim.ts';
 import type { DomainsApi } from './domains.ts';
 import { MailError } from './errors.ts';
 import { type EventsApi, messageData } from './events.ts';
-import { assertAttachmentSafe, assertHeaderSafe, buildMime, newMessageId } from './mime.ts';
+import { assertAttachmentSafe, assertHeaderSafe, buildMimeDetailed, newMessageId } from './mime.ts';
 import type { SuppressionApi } from './suppression.ts';
 import type {
   Attachment,
@@ -73,7 +73,12 @@ export interface MessagesApi {
   /** Deliver everything due — queued, scheduled, or waiting on a retry. What a
    *  worker calls in a loop. Safe to run from several processes. */
   deliverPending(limit?: number, now?: Date): Promise<{ sent: number; failed: number; retried: number }>;
-  /** Rebuild the exact bytes for a stored message (dashboard "view source"). */
+  /**
+   * The bytes for a stored message (dashboard "view source"). For a sent
+   * message this is exactly what the transport was handed — the boundaries
+   * and DKIM signature are stored at send time. For one not yet sent it is
+   * what a send now would produce.
+   */
   render(tenantId: TenantId, id: string): Promise<Uint8Array>;
 }
 
@@ -127,12 +132,25 @@ interface Row {
   created_at: Date;
   updated_at: Date;
   sent_at: Date | null;
+  rendering: Rendering | null;
+}
+
+/**
+ * What `render` needs, beyond the payload, to reproduce the bytes the
+ * transport was handed: the multipart boundaries the builder drew, the Date
+ * header's instant, and the DKIM-Signature header exactly as signed (null
+ * when the transport signs). Written with the row's `sent` update.
+ */
+export interface Rendering {
+  boundaries: string[];
+  date: string;
+  dkimSignature: string | null;
 }
 
 const COLUMNS =
   'id, tenant_id, domain_id, status, from_address, to_addresses, cc_addresses, bcc_addresses, subject, message_id, ' +
   'provider_message_id, payload, content_hash, tags, idempotency_key, attempts, last_error, next_attempt_at, ' +
-  'suppressed_recipients, scheduled_at, created_at, updated_at, sent_at';
+  'suppressed_recipients, scheduled_at, created_at, updated_at, sent_at, rendering';
 
 const toMessage = (r: Row): Message => ({
   id: r.id,
@@ -237,9 +255,13 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
     return domain;
   };
 
-  const buildRaw = async (row: Row, at: Date): Promise<{ raw: Uint8Array; domain: SendingDomain | null }> => {
+  const buildRaw = async (
+    row: Row,
+    at: Date,
+    reuse?: Rendering | null,
+  ): Promise<{ raw: Uint8Array; domain: SendingDomain | null; rendering: Rendering }> => {
     const p = row.payload;
-    let raw = buildMime({
+    const built = buildMimeDetailed({
       from: parsed(p.from),
       to: p.to.map(parsed),
       cc: p.cc.map(parsed),
@@ -257,21 +279,35 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       listUnsubscribe: p.listUnsubscribe ?? undefined,
       messageId: row.message_id,
       date: at,
+      boundaries: reuse?.boundaries,
     });
+    let raw = built.raw;
+    let dkimSignature: string | null = null;
+    if (reuse) {
+      // Reproducing a send: the signature is the one that went out, verbatim —
+      // not a fresh one over a possibly rotated key.
+      if (reuse.dkimSignature) raw = Buffer.concat([Buffer.from(`${reuse.dkimSignature}\r\n`, 'latin1'), raw]);
+      return { raw, domain: null, rendering: { ...reuse, boundaries: built.boundaries } };
+    }
     let domain: SendingDomain | null = null;
     if (row.domain_id) domain = await domains.get(row.tenant_id, row.domain_id);
     if (domain) {
       const signer = await domains.signerFor(domain);
-      if (signer) raw = dkimSign(raw, { ...signer, now: at });
+      if (signer) {
+        const signed = dkimSign(raw, { ...signer, now: at });
+        // dkimSign prepends exactly one folded header + CRLF to the input.
+        dkimSignature = Buffer.from(signed.subarray(0, signed.length - raw.length - 2)).toString('latin1');
+        raw = signed;
+      }
     }
-    return { raw, domain };
+    return { raw, domain, rendering: { boundaries: built.boundaries, date: at.toISOString(), dkimSignature } };
   };
 
   /** One delivery attempt for a row that has already been claimed. */
   const attempt = async (row: Row, now: Date): Promise<'sent' | 'retried' | 'failed'> => {
     const attemptNo = row.attempts + 1;
     try {
-      const { raw, domain } = await buildRaw(row, now);
+      const { raw, domain, rendering } = await buildRaw(row, now);
       const returnPath = domain?.returnPathHost ? `bounces@${domain.returnPathHost}` : row.from_address;
       const recipients = [...new Set([...row.to_addresses, ...row.cc_addresses, ...row.bcc_addresses])];
       const result = await transport.send({
@@ -286,9 +322,10 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       });
       await db.query(
         `UPDATE mail.messages
-            SET status = 'sent', provider_message_id = $2, attempts = $3, sent_at = $4, next_attempt_at = NULL, last_error = NULL
+            SET status = 'sent', provider_message_id = $2, attempts = $3, sent_at = $4, next_attempt_at = NULL,
+                last_error = NULL, rendering = $5::jsonb
           WHERE id = $1`,
-        [row.id, result.providerMessageId, attemptNo, now],
+        [row.id, result.providerMessageId, attemptNo, now, JSON.stringify(rendering)],
       );
       await events.record([
         { type: 'sent', messageId: row.id, providerMessageId: result.providerMessageId, at: now },
@@ -499,6 +536,11 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
     async render(tenantId, id) {
       const row = await getRow(tenantId, id);
       if (!row) throw new MailError({ code: 'not_found', what: 'message', id });
+      // Sent: the boundaries and signature stored at send time reproduce the
+      // bytes the transport was handed. Not yet sent (or sent before
+      // `rendering` existed): a fresh build with a fresh signature, which is
+      // what a send now would produce.
+      if (row.rendering) return (await buildRaw(row, new Date(row.rendering.date), row.rendering)).raw;
       return (await buildRaw(row, row.sent_at ?? row.created_at)).raw;
     },
   };
