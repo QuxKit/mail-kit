@@ -16,24 +16,45 @@ describe('mail-kit/mime', () => {
     assert.equal(from.email, 'Ada@example.com');
     assert.equal(from.domain, 'example.com');
     assert.equal(renderAddress(from), 'Ada Lovelace <Ada@example.com>');
-    assert.equal(renderAddress(parseAddress({ email: 'x@example.com', name: 'Smith, J.' })), '"Smith, J." <x@example.com>');
-    assert.match(renderAddress(parseAddress({ email: 'x@example.com', name: 'Zoë' })), /^=\?UTF-8\?B\?.*\?= <x@example.com>$/);
+    assert.equal(
+      renderAddress(parseAddress({ email: 'x@example.com', name: 'Smith, J.' })),
+      '"Smith, J." <x@example.com>',
+    );
+    assert.match(
+      renderAddress(parseAddress({ email: 'x@example.com', name: 'Zoë' })),
+      /^=\?UTF-8\?B\?.*\?= <x@example.com>$/,
+    );
     assert.equal(parseAddress('x@Bücher.example').domain, 'xn--bcher-kva.example');
-    assert.deepEqual(parseAddress('Ada Lovelace <ada@example.com>'), { email: 'ada@example.com', name: 'Ada Lovelace', domain: 'example.com' });
-    assert.deepEqual(parseAddress('"Smith, J." <j@example.com>'), { email: 'j@example.com', name: 'Smith, J.', domain: 'example.com' });
+    assert.deepEqual(parseAddress('Ada Lovelace <ada@example.com>'), {
+      email: 'ada@example.com',
+      name: 'Ada Lovelace',
+      domain: 'example.com',
+    });
+    assert.deepEqual(parseAddress('"Smith, J." <j@example.com>'), {
+      email: 'j@example.com',
+      name: 'Smith, J.',
+      domain: 'example.com',
+    });
     assert.equal(parseAddress('<bare@example.com>').name, null);
   });
 
   it('rejects addresses that are not addresses', () => {
     for (const bad of ['', 'nope', '@x.com', 'a@', 'a b@x.com', 'a@x', 'a@-x.com', 'a\r\nb@x.com']) {
-      assert.throws(() => parseAddress(bad), (e: unknown) => MailError.hasCode(e, 'invalid_address'), bad);
+      assert.throws(
+        () => parseAddress(bad),
+        (e: unknown) => MailError.hasCode(e, 'invalid_address'),
+        bad,
+      );
     }
   });
 
   it('builds text-only, html-only and alternative bodies with CRLF and QP', () => {
     const t = Buffer.from(buildMime({ ...base, text: 'plain body' })).toString();
     assert.match(t, /^From: Ada Lovelace <Ada@example.com>\r\nTo: bob@example.org\r\nSubject: Hello\r\n/);
-    assert.match(t, /Content-Type: text\/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nplain body\r\n$/);
+    assert.match(
+      t,
+      /Content-Type: text\/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\nplain body\r\n$/,
+    );
     assert.ok(!/[^\r]\n/.test(t), 'no bare LF');
 
     const both = Buffer.from(buildMime({ ...base, text: 'hi', html: '<b>hi</b>' })).toString();
@@ -71,12 +92,29 @@ describe('mail-kit/mime', () => {
   });
 
   it('adds List-Unsubscribe and the one-click header, and refuses injection', () => {
-    const m = Buffer.from(buildMime({ ...base, text: 'x', listUnsubscribe: { url: 'https://u.example/1', mailto: 'un@example.com' } })).toString();
-    assert.match(m, /List-Unsubscribe: <https:\/\/u.example\/1>, <mailto:un@example.com>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click/);
-    assert.throws(() => buildMime({ ...base, text: 'x', subject: 'a\r\nBcc: evil@x.com' }), (e: unknown) => MailError.hasCode(e, 'header_injection'));
-    assert.throws(() => buildMime({ ...base, text: 'x', headers: { 'X-Foo': 'a\nb' } }), (e: unknown) => MailError.hasCode(e, 'header_injection'));
-    assert.throws(() => buildMime({ ...base, text: 'x', headers: { From: 'spoof@x.com' } }), (e: unknown) => MailError.hasCode(e, 'invalid_input'));
-    assert.throws(() => buildMime({ ...base }), (e: unknown) => MailError.hasCode(e, 'invalid_input'));
+    const m = Buffer.from(
+      buildMime({ ...base, text: 'x', listUnsubscribe: { url: 'https://u.example/1', mailto: 'un@example.com' } }),
+    ).toString();
+    assert.match(
+      m,
+      /List-Unsubscribe: <https:\/\/u.example\/1>, <mailto:un@example.com>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click/,
+    );
+    assert.throws(
+      () => buildMime({ ...base, text: 'x', subject: 'a\r\nBcc: evil@x.com' }),
+      (e: unknown) => MailError.hasCode(e, 'header_injection'),
+    );
+    assert.throws(
+      () => buildMime({ ...base, text: 'x', headers: { 'X-Foo': 'a\nb' } }),
+      (e: unknown) => MailError.hasCode(e, 'header_injection'),
+    );
+    assert.throws(
+      () => buildMime({ ...base, text: 'x', headers: { From: 'spoof@x.com' } }),
+      (e: unknown) => MailError.hasCode(e, 'invalid_input'),
+    );
+    assert.throws(
+      () => buildMime({ ...base }),
+      (e: unknown) => MailError.hasCode(e, 'invalid_input'),
+    );
   });
 
   it('formats the date per RFC 5322', () => {

@@ -56,7 +56,11 @@ export interface ListMessagesOptions {
 export interface MessagesApi {
   send(tenantId: TenantId, input: SendInput, opts?: SendOptions): Promise<Message>;
   /** Independent sends; one failing does not stop the rest. */
-  sendBatch(tenantId: TenantId, inputs: readonly SendInput[], opts?: SendOptions): Promise<Array<{ ok: true; message: Message } | { ok: false; error: MailError }>>;
+  sendBatch(
+    tenantId: TenantId,
+    inputs: readonly SendInput[],
+    opts?: SendOptions,
+  ): Promise<Array<{ ok: true; message: Message } | { ok: false; error: MailError }>>;
   get(tenantId: TenantId, id: string): Promise<Message | null>;
   list(tenantId: TenantId, opts?: ListMessagesOptions): Promise<Message[]>;
   /** A queued or scheduled message will not be sent. */
@@ -153,29 +157,43 @@ const toMessage = (r: Row): Message => ({
 });
 
 const stored = (a: ParsedAddress): StoredAddress => ({ email: a.email, name: a.name });
-const parsed = (a: StoredAddress): ParsedAddress => ({ email: a.email, name: a.name, domain: a.email.slice(a.email.lastIndexOf('@') + 1) });
+const parsed = (a: StoredAddress): ParsedAddress => ({
+  email: a.email,
+  name: a.name,
+  domain: a.email.slice(a.email.lastIndexOf('@') + 1),
+});
 
 const attachmentBase64 = (a: Attachment): string =>
   typeof a.content === 'string' ? a.content : Buffer.from(a.content).toString('base64');
 
 /** Validate and normalise. Everything that can be rejected without the
  *  database is rejected here, so a bad request never leaves a row behind. */
-export function normaliseInput(input: SendInput): { payload: StoredPayload; from: ParsedAddress; tags: Record<string, string> } {
+export function normaliseInput(input: SendInput): {
+  payload: StoredPayload;
+  from: ParsedAddress;
+  tags: Record<string, string>;
+} {
   const from = parseAddress(input.from);
   const to = parseAddressList(input.to);
   const cc = parseAddressList(input.cc);
   const bcc = parseAddressList(input.bcc);
   const replyTo = parseAddressList(input.replyTo);
-  if (to.length === 0) throw new MailError({ code: 'invalid_input', reason: 'a message needs at least one To recipient' });
-  if (to.length + cc.length + bcc.length > 50) throw new MailError({ code: 'invalid_input', reason: 'at most 50 recipients per message' });
+  if (to.length === 0)
+    throw new MailError({ code: 'invalid_input', reason: 'a message needs at least one To recipient' });
+  if (to.length + cc.length + bcc.length > 50)
+    throw new MailError({ code: 'invalid_input', reason: 'at most 50 recipients per message' });
   if (typeof input.subject !== 'string') throw new MailError({ code: 'invalid_input', reason: 'subject is required' });
   assertHeaderSafe('Subject', input.subject);
-  if (!input.text && !input.html) throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
+  if (!input.text && !input.html)
+    throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
   for (const [k, v] of Object.entries(input.headers ?? {})) assertHeaderSafe(k, v);
   const tags: Record<string, string> = {};
   for (const [k, v] of Object.entries(input.tags ?? {})) {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(k) || !/^[A-Za-z0-9_-]{0,256}$/.test(v)) {
-      throw new MailError({ code: 'invalid_input', reason: `tag ${JSON.stringify(k)} must be [A-Za-z0-9_-], name ≤64 and value ≤256 chars` });
+      throw new MailError({
+        code: 'invalid_input',
+        reason: `tag ${JSON.stringify(k)} must be [A-Za-z0-9_-], name ≤64 and value ≤256 chars`,
+      });
     }
     tags[k] = v;
   }
@@ -213,7 +231,8 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
     const domain = await domains.find(tenantId, from.domain);
     if (!requireVerified) return domain;
     if (!domain) throw new MailError({ code: 'domain_not_verified', domain: from.domain, status: 'missing' });
-    if (domain.status !== 'verified') throw new MailError({ code: 'domain_not_verified', domain: from.domain, status: domain.status });
+    if (domain.status !== 'verified')
+      throw new MailError({ code: 'domain_not_verified', domain: from.domain, status: domain.status });
     return domain;
   };
 
@@ -272,14 +291,16 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       );
       await events.record([
         { type: 'sent', messageId: row.id, providerMessageId: result.providerMessageId, at: now },
-        ...(result.rejected ?? []).map((r): DeliveryEvent => ({
-          type: 'bounced',
-          messageId: row.id,
-          providerMessageId: result.providerMessageId,
-          recipient: r.recipient,
-          at: now,
-          bounce: { kind: 'hard', subtype: 'RejectedAtSubmission', diagnostic: r.detail },
-        })),
+        ...(result.rejected ?? []).map(
+          (r): DeliveryEvent => ({
+            type: 'bounced',
+            messageId: row.id,
+            providerMessageId: result.providerMessageId,
+            recipient: r.recipient,
+            at: now,
+            bounce: { kind: 'hard', subtype: 'RejectedAtSubmission', diagnostic: r.detail },
+          }),
+        ),
       ]);
       return 'sent';
     } catch (error) {
@@ -305,7 +326,10 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
   };
 
   const getRow = async (tenantId: TenantId, id: string): Promise<Row | null> => {
-    const rows = await db.query<Row>(`SELECT ${COLUMNS} FROM mail.messages WHERE tenant_id = $1 AND id = $2`, [tenantId, id]);
+    const rows = await db.query<Row>(`SELECT ${COLUMNS} FROM mail.messages WHERE tenant_id = $1 AND id = $2`, [
+      tenantId,
+      id,
+    ]);
     return rows[0] ?? null;
   };
 
@@ -326,7 +350,9 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       const dropped = all.filter((e) => suppressed.has(e.toLowerCase()));
       const stored: StoredPayload = { ...payload, to, cc, bcc };
 
-      const contentHash = sha256Hex(JSON.stringify({ payload: stored, tags, scheduledAt: input.scheduledAt?.toISOString() ?? null }));
+      const contentHash = sha256Hex(
+        JSON.stringify({ payload: stored, tags, scheduledAt: input.scheduledAt?.toISOString() ?? null }),
+      );
       const nothingLeft = to.length + cc.length + bcc.length === 0;
       const scheduled = input.scheduledAt && input.scheduledAt.getTime() > now.getTime();
       const status: MessageStatus = nothingLeft ? 'suppressed' : scheduled ? 'scheduled' : 'queued';
@@ -367,7 +393,8 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
           [tenantId, input.idempotencyKey],
         );
         const prior = existing[0]!;
-        if (prior.content_hash !== contentHash) throw new MailError({ code: 'idempotency_conflict', key: input.idempotencyKey! });
+        if (prior.content_hash !== contentHash)
+          throw new MailError({ code: 'idempotency_conflict', key: input.idempotencyKey! });
         return toMessage(prior);
       }
 

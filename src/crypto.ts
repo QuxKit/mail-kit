@@ -2,14 +2,12 @@
 
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
-export const sha256Hex = (value: string | Uint8Array): string =>
-  createHash('sha256').update(value).digest('hex');
+export const sha256Hex = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex');
 
 export const hmacSha256 = (key: string | Uint8Array, value: string | Uint8Array): Buffer =>
   createHmac('sha256', key).update(value).digest();
 
-export const safeEqual = (a: Uint8Array, b: Uint8Array): boolean =>
-  a.length === b.length && timingSafeEqual(a, b);
+export const safeEqual = (a: Uint8Array, b: Uint8Array): boolean => a.length === b.length && timingSafeEqual(a, b);
 
 /** Parse a 64-hex-char key or explain what was expected. */
 export function keyFromHex(hex: string | undefined, what: string): Buffer {

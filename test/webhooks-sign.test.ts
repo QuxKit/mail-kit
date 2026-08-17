@@ -19,17 +19,42 @@ describe('mail-kit/webhooks: signature', () => {
     const parsed = verifyWebhookSignature(secret, headers, body, { now }) as { type: string };
     assert.equal(parsed.type, 'email.delivered');
     // header names are case-insensitive on the receiving side
-    assert.ok(verifyWebhookSignature(secret, { 'Webhook-Id': headers['webhook-id'], 'Webhook-Timestamp': headers['webhook-timestamp'], 'Webhook-Signature': headers['webhook-signature'] }, body, { now }));
+    assert.ok(
+      verifyWebhookSignature(
+        secret,
+        {
+          'Webhook-Id': headers['webhook-id'],
+          'Webhook-Timestamp': headers['webhook-timestamp'],
+          'Webhook-Signature': headers['webhook-signature'],
+        },
+        body,
+        { now },
+      ),
+    );
   });
 
   it('refuses a tampered body, a wrong secret, a stale timestamp and missing headers', () => {
     const headers = signWebhook(secret, 'msg_1', now, body);
-    const bad = (h: Record<string, string | undefined>, b = body, o = { now }) => assert.throws(() => verifyWebhookSignature(secret, h, b, o), (e: unknown) => MailError.hasCode(e, 'signature_invalid'));
+    const bad = (h: Record<string, string | undefined>, b = body, o = { now }) =>
+      assert.throws(
+        () => verifyWebhookSignature(secret, h, b, o),
+        (e: unknown) => MailError.hasCode(e, 'signature_invalid'),
+      );
     bad(headers, body.replace('delivered', 'bounced'));
-    assert.throws(() => verifyWebhookSignature('whsec_other', headers, body, { now }), (e: unknown) => MailError.hasCode(e, 'signature_invalid'));
+    assert.throws(
+      () => verifyWebhookSignature('whsec_other', headers, body, { now }),
+      (e: unknown) => MailError.hasCode(e, 'signature_invalid'),
+    );
     bad(headers, body, { now: new Date(now.getTime() + 10 * 60_000) });
     bad({ 'webhook-id': 'msg_1' });
     // an extra unknown-version signature alongside a valid one is fine
-    assert.ok(verifyWebhookSignature(secret, { ...headers, 'webhook-signature': `v2,zzz ${headers['webhook-signature']}` }, body, { now }));
+    assert.ok(
+      verifyWebhookSignature(
+        secret,
+        { ...headers, 'webhook-signature': `v2,zzz ${headers['webhook-signature']}` },
+        body,
+        { now },
+      ),
+    );
   });
 });

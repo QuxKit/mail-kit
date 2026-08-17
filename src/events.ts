@@ -128,7 +128,9 @@ export function createEvents(opts: EventsOptions): EventsApi {
   const findMessage = async (tx: SqlExecutor, e: DeliveryEvent): Promise<MessageRow | null> => {
     const cols = 'id, tenant_id, status, from_address, to_addresses, subject, tags, provider_message_id, created_at';
     if (e.messageId) {
-      const rows = await tx.query<MessageRow>(`SELECT ${cols} FROM mail.messages WHERE id = $1 FOR UPDATE`, [e.messageId]);
+      const rows = await tx.query<MessageRow>(`SELECT ${cols} FROM mail.messages WHERE id = $1 FOR UPDATE`, [
+        e.messageId,
+      ]);
       if (rows[0]) return rows[0];
     }
     if (e.providerMessageId) {
@@ -169,7 +171,10 @@ export function createEvents(opts: EventsOptions): EventsApi {
           );
           const row = rows[0]!;
           if (!message) {
-            opts.logger?.warn('delivery event for unknown message', { type: e.type, providerMessageId: e.providerMessageId });
+            opts.logger?.warn('delivery event for unknown message', {
+              type: e.type,
+              providerMessageId: e.providerMessageId,
+            });
             return row;
           }
 
@@ -180,9 +185,17 @@ export function createEvents(opts: EventsOptions): EventsApi {
           // tenant's list; complaint → the global list (mailbox providers do
           // not forgive per-tenant).
           if (e.recipient && e.type === 'bounced' && e.bounce?.kind !== 'soft') {
-            await suppression.add(message.tenant_id, { address: e.recipient, reason: 'bounce', detail: e.bounce?.diagnostic ?? e.bounce?.subtype });
+            await suppression.add(message.tenant_id, {
+              address: e.recipient,
+              reason: 'bounce',
+              detail: e.bounce?.diagnostic ?? e.bounce?.subtype,
+            });
           } else if (e.recipient && e.type === 'complained') {
-            await suppression.add(null, { address: e.recipient, reason: 'complaint', detail: `via ${message.tenant_id}` });
+            await suppression.add(null, {
+              address: e.recipient,
+              reason: 'complaint',
+              detail: `via ${message.tenant_id}`,
+            });
           }
 
           await webhooks.enqueue(message.tenant_id, WEBHOOK_TYPE[e.type], messageData(message, e), e.at);

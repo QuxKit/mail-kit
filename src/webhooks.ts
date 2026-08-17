@@ -168,8 +168,16 @@ const toDelivery = (r: DeliveryRow): WebhookDelivery => ({
 });
 
 export const ALL_WEBHOOK_EVENTS: readonly WebhookEventType[] = [
-  'email.sent', 'email.delivered', 'email.delivery_delayed', 'email.bounced', 'email.complained',
-  'email.failed', 'email.opened', 'email.clicked', 'domain.verified', 'domain.failed',
+  'email.sent',
+  'email.delivered',
+  'email.delivery_delayed',
+  'email.bounced',
+  'email.complained',
+  'email.failed',
+  'email.opened',
+  'email.clicked',
+  'domain.verified',
+  'domain.failed',
 ];
 
 export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
@@ -191,9 +199,11 @@ export function createWebhooks(opts: WebhooksOptions): WebhooksApi {
       }
       const events = [...new Set(input.events)];
       for (const e of events) {
-        if (!ALL_WEBHOOK_EVENTS.includes(e)) throw new MailError({ code: 'invalid_input', reason: `unknown webhook event ${e}` });
+        if (!ALL_WEBHOOK_EVENTS.includes(e))
+          throw new MailError({ code: 'invalid_input', reason: `unknown webhook event ${e}` });
       }
-      if (events.length === 0) throw new MailError({ code: 'invalid_input', reason: 'a webhook needs at least one event' });
+      if (events.length === 0)
+        throw new MailError({ code: 'invalid_input', reason: 'a webhook needs at least one event' });
       const secret = `whsec_${Buffer.from(randomToken(24), 'base64url').toString('base64')}`;
       const rows = await db.query<SubRow>(
         `INSERT INTO mail.webhook_subscriptions (tenant_id, url, secret, events)

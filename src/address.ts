@@ -36,7 +36,7 @@ const NAME_ADDR = /^\s*(?:"([^"]*)"|([^<]*?))\s*<([^<>]+)>\s*$/;
 
 export function parseAddress(input: Address): ParsedAddress {
   let raw = typeof input === 'string' ? input : input.email;
-  let name = typeof input === 'string' ? null : (input.name?.trim() || null);
+  let name = typeof input === 'string' ? null : input.name?.trim() || null;
   if (typeof input === 'string') {
     const m = NAME_ADDR.exec(input);
     if (m) {

@@ -34,8 +34,18 @@ export function dkimTxtRecord(publicKeyBase64: string): string {
 
 /** Headers signed when present, in this order. `from` is mandatory by RFC. */
 export const DEFAULT_SIGNED_HEADERS = [
-  'from', 'to', 'cc', 'reply-to', 'subject', 'date', 'message-id', 'mime-version',
-  'content-type', 'content-transfer-encoding', 'list-unsubscribe', 'list-unsubscribe-post',
+  'from',
+  'to',
+  'cc',
+  'reply-to',
+  'subject',
+  'date',
+  'message-id',
+  'mime-version',
+  'content-type',
+  'content-transfer-encoding',
+  'list-unsubscribe',
+  'list-unsubscribe-post',
 ];
 
 export interface DkimSignOptions {
@@ -187,7 +197,8 @@ export async function dkimVerify(
   const b = tags.get('b');
   if (!domain || !selector || !h || !bh || !b) return { ok: false, reason: 'missing tags' };
   if (tags.get('a') !== 'rsa-sha256') return { ok: false, domain, selector, reason: `unsupported a=${tags.get('a')}` };
-  if ((tags.get('c') ?? 'simple/simple') !== 'relaxed/relaxed') return { ok: false, domain, selector, reason: 'only relaxed/relaxed is verified here' };
+  if ((tags.get('c') ?? 'simple/simple') !== 'relaxed/relaxed')
+    return { ok: false, domain, selector, reason: 'only relaxed/relaxed is verified here' };
 
   const computedBh = createHash('sha256').update(relaxBody(body), 'latin1').digest('base64');
   if (computedBh !== bh) return { ok: false, domain, selector, reason: 'body hash mismatch' };

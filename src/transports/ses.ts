@@ -33,7 +33,13 @@ export interface SesTransportOptions {
   timeoutMs?: number;
 }
 
-const RETRYABLE_TYPES = new Set(['TooManyRequestsException', 'LimitExceededException', 'SendingPausedException', 'InternalServiceErrorException', 'ServiceUnavailableException']);
+const RETRYABLE_TYPES = new Set([
+  'TooManyRequestsException',
+  'LimitExceededException',
+  'SendingPausedException',
+  'InternalServiceErrorException',
+  'ServiceUnavailableException',
+]);
 
 export function sesTransport(opts: SesTransportOptions): MailTransport {
   const endpoint = (opts.endpoint ?? `https://email.${opts.region}.amazonaws.com`).replace(/\/$/, '');
@@ -59,7 +65,12 @@ export function sesTransport(opts: SesTransportOptions): MailTransport {
     try {
       res = await opts.fetch(url, { method, headers, body: text || undefined, signal: controller.signal });
     } catch (error) {
-      throw new MailError({ code: 'transport', transport: 'ses', retryable: true, detail: `network: ${error instanceof Error ? error.message : String(error)}` });
+      throw new MailError({
+        code: 'transport',
+        transport: 'ses',
+        retryable: true,
+        detail: `network: ${error instanceof Error ? error.message : String(error)}`,
+      });
     } finally {
       clearTimeout(timer);
     }
@@ -71,10 +82,18 @@ export function sesTransport(opts: SesTransportOptions): MailTransport {
       data = { message: raw };
     }
     if (res.status >= 200 && res.status < 300) return { status: res.status, data: data as T };
-    const type = (res.headers.get('x-amzn-errortype') ?? '').split(':')[0] || (data as { __type?: string })?.__type || 'unknown';
-    const message = (data as { message?: string; Message?: string })?.message ?? (data as { Message?: string })?.Message ?? raw;
+    const type =
+      (res.headers.get('x-amzn-errortype') ?? '').split(':')[0] || (data as { __type?: string })?.__type || 'unknown';
+    const message =
+      (data as { message?: string; Message?: string })?.message ?? (data as { Message?: string })?.Message ?? raw;
     const retryable = res.status === 429 || res.status >= 500 || RETRYABLE_TYPES.has(type);
-    throw new MailError({ code: 'transport', transport: 'ses', retryable, status: res.status, detail: `${type}: ${message}` });
+    throw new MailError({
+      code: 'transport',
+      transport: 'ses',
+      retryable,
+      status: res.status,
+      detail: `${type}: ${message}`,
+    });
   };
 
   const identityPath = (domain: string) => `/v2/email/identities/${encodeURIComponent(domain)}`;
@@ -88,8 +107,21 @@ export function sesTransport(opts: SesTransportOptions): MailTransport {
       required: true,
     }));
     if (returnPathHost) {
-      records.push({ type: 'MX', name: returnPathHost, value: `feedback-smtp.${opts.region}.amazonses.com`, priority: 10, purpose: 'return_path', required: true });
-      records.push({ type: 'TXT', name: returnPathHost, value: 'v=spf1 include:amazonses.com ~all', purpose: 'spf', required: true });
+      records.push({
+        type: 'MX',
+        name: returnPathHost,
+        value: `feedback-smtp.${opts.region}.amazonses.com`,
+        priority: 10,
+        purpose: 'return_path',
+        required: true,
+      });
+      records.push({
+        type: 'TXT',
+        name: returnPathHost,
+        value: 'v=spf1 include:amazonses.com ~all',
+        purpose: 'spf',
+        required: true,
+      });
     }
     return records;
   };
@@ -105,7 +137,8 @@ export function sesTransport(opts: SesTransportOptions): MailTransport {
     spfInclude: 'amazonses.com',
 
     async send(envelope): Promise<TransportResult> {
-      const configurationSet = typeof opts.configurationSet === 'function' ? opts.configurationSet(envelope) : opts.configurationSet;
+      const configurationSet =
+        typeof opts.configurationSet === 'function' ? opts.configurationSet(envelope) : opts.configurationSet;
       const body: Record<string, unknown> = {
         FromEmailAddress: envelope.from,
         Destination: { ToAddresses: envelope.recipients },
@@ -130,7 +163,10 @@ export function sesTransport(opts: SesTransportOptions): MailTransport {
         tokens = data.DkimAttributes?.Tokens ?? [];
       }
       if (returnPathHost) {
-        await call('PUT', `${identityPath(domain)}/mail-from`, { MailFromDomain: returnPathHost, BehaviorOnMxFailure: 'USE_DEFAULT_VALUE' });
+        await call('PUT', `${identityPath(domain)}/mail-from`, {
+          MailFromDomain: returnPathHost,
+          BehaviorOnMxFailure: 'USE_DEFAULT_VALUE',
+        });
       }
       return { records: recordsFor(domain, tokens, returnPathHost), providerRef: domain };
     },
@@ -139,7 +175,10 @@ export function sesTransport(opts: SesTransportOptions): MailTransport {
       const { data } = await call<Identity>('GET', identityPath(domain));
       const dkim = data.DkimAttributes?.Status;
       const verified = data.VerifiedForSendingStatus === true && dkim === 'SUCCESS';
-      return { verified, detail: `sending=${data.VerifiedForSendingStatus ?? 'unknown'} dkim=${dkim ?? 'unknown'} mailfrom=${data.MailFromAttributes?.MailFromDomainStatus ?? 'n/a'}` };
+      return {
+        verified,
+        detail: `sending=${data.VerifiedForSendingStatus ?? 'unknown'} dkim=${dkim ?? 'unknown'} mailfrom=${data.MailFromAttributes?.MailFromDomainStatus ?? 'n/a'}`,
+      };
     },
 
     async removeDomain(domain) {
@@ -166,7 +205,11 @@ interface SesMessage {
   notificationType?: string;
   mail: { messageId: string; timestamp?: string; destination?: string[]; tags?: Record<string, string[]> };
   bounce?: { bounceType: string; bounceSubType?: string; bouncedRecipients: SesRecipient[]; timestamp?: string };
-  complaint?: { complainedRecipients: Array<{ emailAddress: string }>; complaintFeedbackType?: string; timestamp?: string };
+  complaint?: {
+    complainedRecipients: Array<{ emailAddress: string }>;
+    complaintFeedbackType?: string;
+    timestamp?: string;
+  };
   delivery?: { recipients?: string[]; timestamp?: string };
   deliveryDelay?: { delayType?: string; delayedRecipients?: SesRecipient[]; timestamp?: string };
   reject?: { reason?: string };
@@ -181,7 +224,13 @@ interface SesMessage {
  */
 export function parseSesEvents(input: string | Record<string, unknown>): DeliveryEvent[] {
   let obj: unknown = typeof input === 'string' ? JSON.parse(input) : input;
-  if (obj && typeof obj === 'object' && 'Type' in obj && 'Message' in obj && typeof (obj as { Message: unknown }).Message === 'string') {
+  if (
+    obj &&
+    typeof obj === 'object' &&
+    'Type' in obj &&
+    'Message' in obj &&
+    typeof (obj as { Message: unknown }).Message === 'string'
+  ) {
     if ((obj as { Type: string }).Type !== 'Notification') return [];
     obj = JSON.parse((obj as { Message: string }).Message);
   }
@@ -222,7 +271,11 @@ export function parseSesEvents(input: string | Record<string, unknown>): Deliver
         raw: m,
       }));
     case 'deliverydelay':
-      return (m.deliveryDelay?.delayedRecipients?.length ? m.deliveryDelay.delayedRecipients : [{ emailAddress: undefined as unknown as string }]).map((r) => ({
+      return (
+        m.deliveryDelay?.delayedRecipients?.length
+          ? m.deliveryDelay.delayedRecipients
+          : [{ emailAddress: undefined as unknown as string }]
+      ).map((r) => ({
         type: 'delayed',
         providerMessageId: id,
         recipient: r.emailAddress,
@@ -231,11 +284,30 @@ export function parseSesEvents(input: string | Record<string, unknown>): Deliver
         raw: m,
       }));
     case 'reject':
-      return [{ type: 'rejected', providerMessageId: id, at: when(), bounce: { kind: 'hard', diagnostic: m.reject?.reason }, raw: m }];
+      return [
+        {
+          type: 'rejected',
+          providerMessageId: id,
+          at: when(),
+          bounce: { kind: 'hard', diagnostic: m.reject?.reason },
+          raw: m,
+        },
+      ];
     case 'open':
-      return [{ type: 'opened', providerMessageId: id, at: when(m.open?.timestamp), userAgent: m.open?.userAgent, raw: m }];
+      return [
+        { type: 'opened', providerMessageId: id, at: when(m.open?.timestamp), userAgent: m.open?.userAgent, raw: m },
+      ];
     case 'click':
-      return [{ type: 'clicked', providerMessageId: id, at: when(m.click?.timestamp), url: m.click?.link, userAgent: m.click?.userAgent, raw: m }];
+      return [
+        {
+          type: 'clicked',
+          providerMessageId: id,
+          at: when(m.click?.timestamp),
+          url: m.click?.link,
+          userAgent: m.click?.userAgent,
+          raw: m,
+        },
+      ];
     default:
       return [];
   }
@@ -284,7 +356,9 @@ export async function verifySnsMessage(message: SnsMessage, deps: { fetch: Fetch
       : message.Type === 'SubscriptionConfirmation' || message.Type === 'UnsubscribeConfirmation'
         ? ['Message', 'MessageId', 'SubscribeURL', 'Timestamp', 'Token', 'TopicArn', 'Type']
         : fail(`unknown SNS message type ${message.Type}`);
-  const canonical = (fields as string[]).map((f) => `${f}\n${(message as unknown as Record<string, string>)[f]}\n`).join('');
+  const canonical = (fields as string[])
+    .map((f) => `${f}\n${(message as unknown as Record<string, string>)[f]}\n`)
+    .join('');
 
   let cert = certCache.get(certUrl.href);
   if (!cert) {

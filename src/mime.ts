@@ -32,13 +32,27 @@ const CRLF = '\r\n';
 /** Header names mail-kit sets itself; a caller's `headers` may not override
  *  them, because they are what the envelope, threading and DKIM rely on. */
 const RESERVED = new Set([
-  'from', 'to', 'cc', 'bcc', 'subject', 'date', 'message-id', 'mime-version',
-  'content-type', 'content-transfer-encoding', 'reply-to', 'return-path',
+  'from',
+  'to',
+  'cc',
+  'bcc',
+  'subject',
+  'date',
+  'message-id',
+  'mime-version',
+  'content-type',
+  'content-transfer-encoding',
+  'reply-to',
+  'return-path',
 ]);
 
 export function assertHeaderSafe(name: string, value: string): void {
   if (/[\r\n]/.test(name) || /[\r\n]/.test(value)) throw new MailError({ code: 'header_injection', header: name });
-  if (!/^[!-9;-~]+$/.test(name)) throw new MailError({ code: 'invalid_input', reason: `header name ${JSON.stringify(name)} is not a valid field name` });
+  if (!/^[!-9;-~]+$/.test(name))
+    throw new MailError({
+      code: 'invalid_input',
+      reason: `header name ${JSON.stringify(name)} is not a valid field name`,
+    });
 }
 
 /** `<random@domain>` — the domain is the sender's, so the id is attributable. */
@@ -158,8 +172,10 @@ function multipart(subtype: string, parts: string[]): string {
 /** Build the message. Returns the bytes and the sorted header names that
  *  were written, which the DKIM signer uses to decide what to sign. */
 export function buildMime(input: MimeInput): Uint8Array {
-  if (!input.text && !input.html) throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
-  if (input.to.length === 0) throw new MailError({ code: 'invalid_input', reason: 'a message needs at least one To recipient' });
+  if (!input.text && !input.html)
+    throw new MailError({ code: 'invalid_input', reason: 'a message needs text or html (or both)' });
+  if (input.to.length === 0)
+    throw new MailError({ code: 'invalid_input', reason: 'a message needs at least one To recipient' });
   assertHeaderSafe('Subject', input.subject);
 
   const headers: string[] = [];
@@ -184,7 +200,10 @@ export function buildMime(input: MimeInput): Uint8Array {
   for (const [name, value] of Object.entries(input.headers ?? {})) {
     assertHeaderSafe(name, value);
     if (RESERVED.has(name.toLowerCase())) {
-      throw new MailError({ code: 'invalid_input', reason: `header ${name} is set by mail-kit and cannot be overridden` });
+      throw new MailError({
+        code: 'invalid_input',
+        reason: `header ${name} is set by mail-kit and cannot be overridden`,
+      });
     }
     headers.push(fold(name, headerText(value)));
   }

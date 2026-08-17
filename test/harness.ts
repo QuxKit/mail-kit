@@ -41,8 +41,7 @@ export function fromPool(pool: pg.Pool): SqlExecutor {
   };
 }
 
-export const TEST_DATABASE_URL =
-  process.env.MAIL_KIT_TEST_DATABASE_URL ?? 'postgres://localhost:5432/mail_kit_test';
+export const TEST_DATABASE_URL = process.env.MAIL_KIT_TEST_DATABASE_URL ?? 'postgres://localhost:5432/mail_kit_test';
 
 /** A resolver over a map you fill in as the "customer publishes records". */
 export class FakeDns implements DnsResolver {

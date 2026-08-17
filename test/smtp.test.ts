@@ -43,7 +43,10 @@ function fakeSmtp(opts: { rejectRcpt?: Record<string, number>; failData?: boolea
         buffer = buffer.slice(nl + 2);
         session.commands.push(line);
         const verb = line.split(' ')[0]!.toUpperCase();
-        if (verb === 'EHLO') socket.write(`250-fake.test\r\n250-SIZE 10485760\r\n${opts.noAuth ? '' : '250-AUTH PLAIN LOGIN\r\n'}250 8BITMIME\r\n`);
+        if (verb === 'EHLO')
+          socket.write(
+            `250-fake.test\r\n250-SIZE 10485760\r\n${opts.noAuth ? '' : '250-AUTH PLAIN LOGIN\r\n'}250 8BITMIME\r\n`,
+          );
         else if (verb === 'AUTH') {
           session.auth = line.slice(5);
           socket.write('235 2.7.0 ok\r\n');
@@ -64,7 +67,10 @@ function fakeSmtp(opts: { rejectRcpt?: Record<string, number>; failData?: boolea
   });
   return {
     sessions,
-    listen: () => new Promise<number>((resolve) => server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port))),
+    listen: () =>
+      new Promise<number>((resolve) =>
+        server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port)),
+      ),
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
@@ -98,7 +104,13 @@ describe('mail-kit/smtp', () => {
     after(() => srv.close());
 
     it('authenticates with PLAIN, sends the envelope and the stuffed body, reports the refused recipient', async () => {
-      const t = smtpTransport({ host: '127.0.0.1', port, starttls: 'never', auth: { user: 'u', pass: 'p' }, name: 'client.test' });
+      const t = smtpTransport({
+        host: '127.0.0.1',
+        port,
+        starttls: 'never',
+        auth: { user: 'u', pass: 'p' },
+        name: 'client.test',
+      });
       const result = await t.send(envelope);
       assert.equal(result.providerMessageId, 'QID42');
       assert.deepEqual(result.rejected, [{ recipient: 'carol@example.org', detail: '550 5.1.1 no such user' }]);
@@ -114,12 +126,21 @@ describe('mail-kit/smtp', () => {
 
     it('fails when every recipient is refused (not retryable) and when the server has no AUTH', async () => {
       const t = smtpTransport({ host: '127.0.0.1', port, starttls: 'never' });
-      await assert.rejects(t.send({ ...envelope, recipients: ['carol@example.org'] }), (e: unknown) => MailError.hasCode(e, 'transport') && e.failure.retryable === false && /every recipient/.test(e.failure.detail));
+      await assert.rejects(
+        t.send({ ...envelope, recipients: ['carol@example.org'] }),
+        (e: unknown) =>
+          MailError.hasCode(e, 'transport') &&
+          e.failure.retryable === false &&
+          /every recipient/.test(e.failure.detail),
+      );
     });
 
     it('requires STARTTLS by default and says so', async () => {
       const t = smtpTransport({ host: '127.0.0.1', port });
-      await assert.rejects(t.send(envelope), (e: unknown) => MailError.hasCode(e, 'transport') && /STARTTLS/.test(e.failure.detail));
+      await assert.rejects(
+        t.send(envelope),
+        (e: unknown) => MailError.hasCode(e, 'transport') && /STARTTLS/.test(e.failure.detail),
+      );
     });
   });
 
@@ -128,11 +149,17 @@ describe('mail-kit/smtp', () => {
     const port = await srv.listen();
     try {
       const t = smtpTransport({ host: '127.0.0.1', port, starttls: 'never' });
-      await assert.rejects(t.send(envelope), (e: unknown) => MailError.hasCode(e, 'transport') && e.failure.retryable === true && e.failure.status === 451);
+      await assert.rejects(
+        t.send(envelope),
+        (e: unknown) => MailError.hasCode(e, 'transport') && e.failure.retryable === true && e.failure.status === 451,
+      );
     } finally {
       await srv.close();
     }
     const dead = smtpTransport({ host: '127.0.0.1', port, starttls: 'never', timeoutMs: 2000 });
-    await assert.rejects(dead.send(envelope), (e: unknown) => MailError.hasCode(e, 'transport') && e.failure.retryable === true);
+    await assert.rejects(
+      dead.send(envelope),
+      (e: unknown) => MailError.hasCode(e, 'transport') && e.failure.retryable === true,
+    );
   });
 });
