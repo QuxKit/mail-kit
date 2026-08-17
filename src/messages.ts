@@ -33,6 +33,7 @@ import type {
   SqlExecutor,
   TenantId,
 } from './types.ts';
+import type { UnsubscribeApi } from './unsubscribe.ts';
 import type { WebhooksApi } from './webhooks.ts';
 
 export interface MessagesOptions {
@@ -42,6 +43,8 @@ export interface MessagesOptions {
   suppression: SuppressionApi;
   events: EventsApi;
   webhooks: WebhooksApi;
+  /** Mints the automatic `List-Unsubscribe` token when `config.unsubscribeUrl` is set. */
+  unsubscribe?: UnsubscribeApi;
   config: MailConfig;
   clock?: Clock;
   logger?: Logger;
@@ -109,6 +112,8 @@ export interface StoredPayload {
   headers: Record<string, string>;
   attachments: Array<{ filename: string; content: string; contentType: string | null; contentId: string | null }>;
   listUnsubscribe: { url?: string; mailto?: string } | null;
+  /** Present only when the send named a list (so older rows hash the same). */
+  listId?: string;
 }
 
 interface Row {
@@ -222,6 +227,9 @@ export function normaliseInput(input: SendInput): {
   if (input.idempotencyKey !== undefined && (input.idempotencyKey.length === 0 || input.idempotencyKey.length > 256)) {
     throw new MailError({ code: 'invalid_input', reason: 'idempotencyKey must be 1–256 chars' });
   }
+  if (input.listId !== undefined && !/^[A-Za-z0-9_.:-]{1,128}$/.test(input.listId)) {
+    throw new MailError({ code: 'invalid_input', reason: 'listId must be [A-Za-z0-9_.:-], 1–128 chars' });
+  }
   const payload: StoredPayload = {
     from: stored(from),
     to: to.map(stored),
@@ -239,12 +247,13 @@ export function normaliseInput(input: SendInput): {
       contentId: a.contentId ?? null,
     })),
     listUnsubscribe: input.listUnsubscribe ?? null,
+    ...(input.listId !== undefined ? { listId: input.listId } : {}),
   };
   return { payload, from, tags };
 }
 
 export function createMessages(opts: MessagesOptions): MessagesApi {
-  const { db, transport, domains, suppression, events, webhooks, config } = opts;
+  const { db, transport, domains, suppression, events, webhooks, config, unsubscribe } = opts;
   const clock: Clock = opts.clock ?? (() => new Date());
   const requireVerified = config.requireVerifiedDomain ?? true;
   const maxAttempts = config.maxAttempts ?? SEND_RETRY_SCHEDULE_S.length;
@@ -383,13 +392,24 @@ export function createMessages(opts: MessagesOptions): MessagesApi {
       // Suppression: drop, don't fail. A campaign to fifty people with one
       // unsubscribed among them should still reach forty-nine.
       const all = [...payload.to, ...payload.cc, ...payload.bcc].map((a) => a.email);
-      const suppressed = await suppression.check(tenantId, all);
+      const suppressed = await suppression.check(tenantId, all, { listId: payload.listId });
       const keep = (a: StoredAddress) => !suppressed.has(a.email.toLowerCase());
       const to = payload.to.filter(keep);
       const cc = payload.cc.filter(keep);
       const bcc = payload.bcc.filter(keep);
       const dropped = all.filter((e) => suppressed.has(e.toLowerCase()));
       const stored: StoredPayload = { ...payload, to, cc, bcc };
+
+      // The automatic one-click pair: a token names one recipient, so it is
+      // set only when the message has exactly one — a message to several
+      // people gets no header unless the caller supplies one (mint per
+      // recipient and send one message each, or pass `listUnsubscribe`).
+      const kept = [...to, ...cc, ...bcc];
+      if (!stored.listUnsubscribe && config.unsubscribeUrl && unsubscribe && kept.length === 1) {
+        // biome-ignore lint/style/noNonNullAssertion: length checked
+        const url = unsubscribe.url({ tenantId, recipient: kept[0]!.email, listId: payload.listId });
+        if (url) stored.listUnsubscribe = { url };
+      }
 
       const contentHash = sha256Hex(
         JSON.stringify({ payload: stored, tags, scheduledAt: input.scheduledAt?.toISOString() ?? null }),

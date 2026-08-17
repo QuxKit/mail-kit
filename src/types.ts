@@ -103,6 +103,16 @@ export interface MailConfig {
    * point it at a tunnel, not at 127.0.0.1.
    */
   allowInsecureHttp?: boolean;
+  /**
+   * Where a recipient's one-click unsubscribe lands: an absolute `https:` URL
+   * with `{token}` in it (`https://app.example/u/{token}`), or one to which
+   * `?token=` is appended. When set (with `dkimKey`, which keys the token),
+   * `send` mints a token for the recipient and writes `List-Unsubscribe` and
+   * `List-Unsubscribe-Post: List-Unsubscribe=One-Click` itself for any
+   * message with exactly one recipient that does not carry `listUnsubscribe`
+   * already. Mount `mail.unsubscribe.handleOneClick` at that URL.
+   */
+  unsubscribeUrl?: string;
 }
 
 // --- addresses and messages -------------------------------------------------
@@ -145,6 +155,14 @@ export interface SendInput {
   headers?: Record<string, string>;
   attachments?: readonly Attachment[];
   listUnsubscribe?: ListUnsubscribe;
+  /**
+   * The list this message belongs to (a newsletter, a digest). Recipients who
+   * unsubscribed from this list are dropped, as are those unsubscribed from
+   * the tenant as a whole; the automatic unsubscribe token names the list, so
+   * pressing it stops this list only. Absent: transactional — only tenant-wide
+   * and global suppressions apply, and the token unsubscribes from the tenant.
+   */
+  listId?: string;
   /** Opaque key/value tags. Passed to the transport where it supports them
    *  (SES message tags), stored on the message, echoed in webhook payloads. */
   tags?: Record<string, string>;
@@ -385,6 +403,8 @@ export interface Suppression {
   id: string;
   /** null = the global list, which every tenant's sends are checked against. */
   tenantId: TenantId | null;
+  /** null = the whole scope; otherwise only sends naming this `listId`. */
+  listId: string | null;
   address: string;
   reason: SuppressionReason;
   detail: string | null;

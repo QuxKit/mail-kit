@@ -31,7 +31,7 @@ export {
 } from './mime.ts';
 export type { HostResolver, UrlGuardOptions } from './ssrf.ts';
 export { assertWebhookUrlAllowed, forbiddenAddressReason } from './ssrf.ts';
-export type { AddSuppressionInput, SuppressionApi, SuppressionOptions } from './suppression.ts';
+export type { AddSuppressionInput, SuppressionApi, SuppressionOptions, SuppressionScope } from './suppression.ts';
 export { createSuppression, normaliseForSuppression } from './suppression.ts';
 export type {
   AddDomainInput,
@@ -72,6 +72,15 @@ export type {
   WebhookEventType,
   WebhookSubscription,
 } from './types.ts';
+export type {
+  OneClickRequest,
+  OneClickResponse,
+  UnsubscribeApi,
+  UnsubscribeClaims,
+  UnsubscribeInput,
+  UnsubscribeOptions,
+} from './unsubscribe.ts';
+export { createUnsubscribe } from './unsubscribe.ts';
 export type { CreateWebhookInput, VerifyOptions, WebhookPayload, WebhooksApi, WebhooksOptions } from './webhooks.ts';
 export {
   ALL_WEBHOOK_EVENTS,

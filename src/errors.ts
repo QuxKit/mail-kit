@@ -20,6 +20,8 @@ export type MailFailure =
   | { code: 'transport'; transport: string; retryable: boolean; status?: number; detail: string }
   /** A domain on a non-signing transport needs `config.dkimKey`. */
   | { code: 'dkim_key_required' }
+  /** Something else needs `config.dkimKey` (the mail key): unsubscribe tokens. */
+  | { code: 'mail_key_required'; purpose: string }
   | { code: 'signature_invalid'; reason: string }
   /** A webhook URL that is not https (without `allowInsecureHttp`), or whose
    *  host is loopback, private, link-local, multicast or otherwise internal. */
@@ -49,6 +51,8 @@ function describe(failure: MailFailure): string {
       return `${failure.transport}: ${failure.detail}${failure.retryable ? ' (retryable)' : ''}`;
     case 'dkim_key_required':
       return 'this transport does not sign; set config.dkimKey so mail-kit can hold a DKIM key for the domain';
+    case 'mail_key_required':
+      return `set config.dkimKey (the mail key) to use ${failure.purpose}`;
     case 'signature_invalid':
       return `signature invalid: ${failure.reason}`;
     case 'webhook_url_forbidden':

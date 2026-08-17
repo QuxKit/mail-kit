@@ -126,6 +126,7 @@ Apply the schema first, in order:
 ```sh
 psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/001_mail.sql
 psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/002_hardening.sql
+psql -v ON_ERROR_STOP=1 -f node_modules/@quxkit/mail-kit/sql/003_unsubscribe.sql
 ```
 
 `@quxkit/mail-kit/pg` is the shipped `SqlExecutor` over a `pg.Pool` (`pg` is
@@ -146,10 +147,15 @@ parts:
 - **Idempotency keys are compared by content.** Same key + same content
   returns the original message; same key + different content is a
   `idempotency_conflict`, not a second send. The unique index does the race.
-- **Suppression is automatic and two-scoped.** A hard bounce suppresses the
+- **Suppression is automatic and scoped.** A hard bounce suppresses the
   address for that tenant; a complaint suppresses it globally — the mailbox
-  provider's memory of the complaint is not per-tenant either. `send` drops
+  provider's memory of the complaint is not per-tenant either; an
+  unsubscribe is scoped to the tenant or to one list within it. `send` drops
   suppressed recipients rather than failing the message, and says which.
+- **Unsubscribe is a token, not a row.** `unsubscribe.token()` is an HMAC
+  over (tenant, recipient, list) under the mail key; `send` writes
+  `List-Unsubscribe` + `List-Unsubscribe-Post` itself, and the RFC 8058
+  handler verifies and suppresses. See [Unsubscribe](#unsubscribe).
 - **The From must be a verified domain the tenant holds.** Verification asks
   DNS for every required record and the transport for its view, and keeps
   reporting the recommended DMARC record it does not require. A domain whose
@@ -265,6 +271,60 @@ const transport: MailTransport = {
 };
 ```
 
+## Unsubscribe
+
+Bulk senders to Gmail and Yahoo must carry RFC 8058 one-click unsubscribe;
+mail-kit does the whole loop without a table:
+
+```ts
+const mail = createMail({
+  db, transport,
+  config: {
+    dkimKey: process.env.MAIL_KIT_KEY,                 // keys the token
+    unsubscribeUrl: 'https://app.example/u/{token}',   // where the button lands
+  },
+});
+
+// send(): List-Unsubscribe + List-Unsubscribe-Post are set for you
+await mail.send(tenantId, { from, to: 'ada@example.org', subject, html, listId: 'newsletter' });
+
+// the endpoint (any framework — the shape is { method, url, headers, body })
+app.post('/u/:token', async (req, res) => {
+  const r = await mail.unsubscribe.handleOneClick({
+    method: req.method, url: req.originalUrl, headers: req.headers, body: req.rawBody,
+  });
+  res.status(r.status).send(r.body);
+});
+```
+
+- **The token is stateless.** `unsubscribe.token({ tenantId, recipient,
+  listId? })` is `u1.<claims>.<HMAC-SHA256>` under a key derived from
+  `config.dkimKey`, URL-safe, deterministic, and valid for as long as the
+  key is — mailbox providers press the button months later. Nothing is
+  written when it is minted; a million recipients cost a million HMACs.
+  `unsubscribe.verify(token)` returns the claims or throws
+  `signature_invalid`; a tampered claim, a foreign key, a padding trick or a
+  fourth field all fail.
+- **The handler is RFC 8058.** A `POST` whose body is
+  `List-Unsubscribe=One-Click` (form-urlencoded or multipart) with a valid
+  token (from `?token=`, the last path segment, or `opts.token`) adds a
+  suppression with reason `unsubscribe` and answers `200`; a wrong method is
+  `405`, anything else `400 invalid token` — never a reason a probe could
+  learn from. Idempotent. `unsubscribe.apply(claims)` is the same write for
+  a host's own confirmation page (a `GET` should show a page, not act).
+- **Scope follows the token.** A send with `listId: 'newsletter'` mints a
+  token naming the list, so pressing it stops the newsletter and not the
+  receipts; a send without one mints a tenant-wide token. `send` checks the
+  global list, the tenant's list-less entries and the message's list, in one
+  query; `suppression.add/list/remove/check` take `listId`.
+- **One recipient, one header.** The automatic pair is set only when the
+  message has exactly one recipient left after suppression, and never when
+  the caller supplies `listUnsubscribe`. A message to several people gets
+  none — mint per recipient and send one message each (`sendBatch`), which
+  is what a mailbox provider expects anyway.
+- `unsubscribeUrl` without `dkimKey` is `mail_key_required` at the first
+  send, before any row.
+
 ## The worker
 
 `send` delivers inline by default. Scheduled sends, retries, webhook
@@ -288,7 +348,9 @@ Everything lives in a `mail` schema so it cannot collide with a host
 application's tables. `sql/001_mail.sql` declares `domains`, `messages`,
 `events`, `suppressions`, `webhook_subscriptions` and `webhook_deliveries`;
 `sql/002_hardening.sql` adds the event de-duplication index,
-`messages.rendering` and `webhook_subscriptions.secret_sealed`. Files are
+`messages.rendering` and `webhook_subscriptions.secret_sealed`;
+`sql/003_unsubscribe.sql` adds `suppressions.list_id` and re-keys the
+scope index on (tenant, list, address). Files are
 numbered, re-runnable and applied in order. Events and deliveries cascade
 from their parents; a message keeps its history when its domain is removed.
 
@@ -297,7 +359,8 @@ from their parents; a message keeps its history when its domain is removed.
 One class, `MailError`, carrying a discriminated union — `invalid_address`,
 `header_injection`, `invalid_input`, `domain_not_verified`,
 `idempotency_conflict`, `not_found`, `invalid_state`, `transport`
-(with `retryable`), `dkim_key_required`, `signature_invalid`,
+(with `retryable`), `dkim_key_required`, `mail_key_required` (with
+`purpose`), `signature_invalid`,
 `webhook_url_forbidden` (with `url` and `reason`: not https, or a host that
 is or resolves to loopback / private / link-local / multicast). Narrow with
 `MailError.hasCode(e, 'domain_not_verified')`; never match the message.

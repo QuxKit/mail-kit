@@ -16,10 +16,13 @@ flowchart LR
         dom["domains<br/>DNS checklist · verify · DKIM key"]
         msg["messages<br/>validate · idempotency · suppression filter<br/>MIME · sign · queue · retry"]
         ev["events<br/>delivered · bounced · complained …"]
-        sup["suppression<br/>tenant list + global list"]
+        sup["suppression<br/>tenant list + global list + per-list"]
+        uns["unsubscribe<br/>HMAC token · RFC 8058 one-click"]
         wh["webhooks<br/>signed · retried · replayable"]
         msg --> dom
         msg --> sup
+        msg --> uns
+        uns --> sup
         ev --> sup
         ev --> wh
         msg --> wh
@@ -42,7 +45,7 @@ flowchart LR
 
     classDef own fill:#b91c1c,stroke:#7f1d1d,color:#ffffff;
     classDef host fill:#1e293b,stroke:#0f172a,color:#e2e8f0;
-    class dom,msg,ev,sup,wh own;
+    class dom,msg,ev,sup,uns,wh own;
     class db,tr,dns,http,call host;
 ```
 
