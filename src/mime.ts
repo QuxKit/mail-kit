@@ -212,6 +212,19 @@ export function assertAttachmentSafe(a: Attachment): void {
   }
 }
 
+/**
+ * A `cid:` part is only reachable from an HTML body. Building
+ * `multipart/related` around a text part would carry bytes nothing can
+ * reference, and dropping the part (what happened before) lost them without
+ * a word — so a message with inline attachments and no `html` is refused.
+ * Called by `normaliseInput` before any row exists, and by `buildMime`.
+ */
+export function assertInlineHasHtml(attachments: readonly Attachment[] | undefined, html: string | undefined): void {
+  if (html) return;
+  const first = attachments?.find((a) => a.contentId !== undefined);
+  if (first) throw new MailError({ code: 'inline_needs_html', contentId: first.contentId ?? '' });
+}
+
 /** RFC 2231 `filename*=UTF-8''...` value: percent-encode every byte that is
  *  not an attribute-char (encodeURIComponent leaves `'()*` bare, which RFC
  *  2231 does not allow). */
@@ -267,6 +280,7 @@ export function buildMimeDetailed(input: MimeInput): { raw: Uint8Array; boundari
     throw new MailError({ code: 'invalid_input', reason: 'a message needs at least one To recipient' });
   assertHeaderSafe('Subject', input.subject);
   for (const a of input.attachments ?? []) assertAttachmentSafe(a);
+  assertInlineHasHtml(input.attachments, input.html);
 
   const headers: string[] = [];
   headers.push(fold('From', renderAddress(input.from)));
@@ -304,6 +318,7 @@ export function buildMimeDetailed(input: MimeInput): { raw: Uint8Array; boundari
   //   both                   → multipart/alternative
   //   + attachments          → multipart/mixed( <above>, attachments… )
   //   inline (cid) images    → multipart/related( html, inline… ) in place of html
+  //                            (refused above when there is no html)
   let body: string;
   const inline = (input.attachments ?? []).filter((a) => a.contentId);
   const attached = (input.attachments ?? []).filter((a) => !a.contentId);

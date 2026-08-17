@@ -23,6 +23,9 @@ export type MailFailure =
   /** Something else needs `config.dkimKey` (the mail key): unsubscribe tokens. */
   | { code: 'mail_key_required'; purpose: string }
   | { code: 'signature_invalid'; reason: string }
+  /** An attachment with `contentId` (a `cid:` inline part) on a message with
+   *  no `html` — nothing could reference it, so it is refused, not dropped. */
+  | { code: 'inline_needs_html'; contentId: string }
   /** The tenant's per-minute or per-day send quota has no token left. */
   | { code: 'quota_exceeded'; tenantId: string; window: 'minute' | 'day'; limit: number; retryAfterMs: number }
   /** A webhook URL that is not https (without `allowInsecureHttp`), or whose
@@ -57,6 +60,8 @@ function describe(failure: MailFailure): string {
       return `set config.dkimKey (the mail key) to use ${failure.purpose}`;
     case 'signature_invalid':
       return `signature invalid: ${failure.reason}`;
+    case 'inline_needs_html':
+      return `attachment with contentId ${JSON.stringify(failure.contentId)} is inline (cid:) but the message has no html part to reference it`;
     case 'quota_exceeded':
       return `tenant ${failure.tenantId} is over its ${failure.window} quota of ${failure.limit}; retry in ${failure.retryAfterMs}ms`;
     case 'webhook_url_forbidden':

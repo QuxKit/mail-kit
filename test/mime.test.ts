@@ -117,6 +117,35 @@ describe('mail-kit/mime', () => {
     );
   });
 
+  it('refuses a cid: attachment on a message with no html part, rather than dropping it', () => {
+    const logo = { filename: 'logo.png', content: Buffer.from('PNG'), contentType: 'image/png', contentId: 'logo' };
+    // before the fix this built a bare text/plain message: the part vanished
+    assert.throws(
+      () => buildMime({ ...base, text: 'see the logo', attachments: [logo] }),
+      (e: unknown) => MailError.hasCode(e, 'inline_needs_html') && e.failure.contentId === 'logo',
+    );
+    // a plain attachment on a text-only message is fine
+    const plain = Buffer.from(
+      buildMime({
+        ...base,
+        text: 't',
+        attachments: [{ filename: 'a.pdf', content: 'JVBERg==', contentType: 'application/pdf' }],
+      }),
+    ).toString();
+    assert.match(plain, /^Content-Type: multipart\/mixed/m);
+    // with html the inline part is carried in multipart/related, as before
+    const related = Buffer.from(
+      buildMime({ ...base, text: 't', html: '<img src="cid:logo">', attachments: [logo] }),
+    ).toString();
+    assert.match(related, /multipart\/related/);
+    assert.match(related, /Content-ID: <logo>/);
+    // metadata problems still win, so the caller sees the more specific error first
+    assert.throws(
+      () => buildMime({ ...base, text: 't', attachments: [{ ...logo, contentId: 'has space' }] }),
+      (e: unknown) => MailError.hasCode(e, 'invalid_input'),
+    );
+  });
+
   it('refuses attachment metadata that would break or bend a header', () => {
     const png = { content: Buffer.from('PNG'), contentType: 'image/png' };
     const bad = (a: Record<string, unknown>, code: string) =>

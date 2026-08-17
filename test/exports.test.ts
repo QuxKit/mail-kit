@@ -25,6 +25,7 @@ describe('mail-kit/exports', () => {
       'buildMime',
       'buildMimeDetailed',
       'assertAttachmentSafe',
+      'assertInlineHasHtml',
       'parseAddress',
       'dkimSign',
       'dkimVerify',

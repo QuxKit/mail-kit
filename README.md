@@ -202,7 +202,9 @@ parts:
 - **Attachment metadata is validated**, not interpolated: CR/LF/NUL in
   `filename`, `contentType` or `contentId` is `header_injection`; `contentType`
   must be `type/subtype`; non-ASCII filenames go out as RFC 2231
-  `filename*=`, never raw.
+  `filename*=`, never raw. An inline (`contentId`) attachment on a message
+  with no `html` is `inline_needs_html` — nothing could reference it, so it
+  is refused before any row rather than silently dropped.
 - **Pages and batches are bounded.** `list` limits cap at 200 and worker
   batches at 500 (`MAX_LIST_LIMIT`, `MAX_BATCH`), clamped rather than refused.
 
@@ -466,7 +468,7 @@ One class, `MailError`, carrying a discriminated union — `invalid_address`,
 `idempotency_conflict`, `not_found`, `invalid_state`, `transport`
 (with `retryable`), `dkim_key_required`, `mail_key_required` (with
 `purpose`), `signature_invalid`, `quota_exceeded` (with `window`, `limit`,
-`retryAfterMs`),
+`retryAfterMs`), `inline_needs_html` (with `contentId`),
 `webhook_url_forbidden` (with `url` and `reason`: not https, or a host that
 is or resolves to loopback / private / link-local / multicast). Narrow with
 `MailError.hasCode(e, 'domain_not_verified')`; never match the message.
