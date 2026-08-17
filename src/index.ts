@@ -17,6 +17,7 @@ export type { EventsApi, EventsOptions } from './events.ts';
 export { createEvents, messageData, nextStatus } from './events.ts';
 export type { Mail, MailOptions } from './instance.ts';
 export { createMail } from './instance.ts';
+export { mapLimit } from './limiter.ts';
 export { clampLimit, MAX_BATCH, MAX_LIST_LIMIT } from './limits.ts';
 export type {
   ListMessagesOptions,
@@ -28,7 +29,7 @@ export type {
   SearchResult,
   StoredPayload,
 } from './messages.ts';
-export { createMessages, normaliseInput, SEND_RETRY_SCHEDULE_S } from './messages.ts';
+export { createMessages, DEFAULT_BATCH_CONCURRENCY, normaliseInput, SEND_RETRY_SCHEDULE_S } from './messages.ts';
 export type { MimeInput } from './mime.ts';
 export {
   assertAttachmentSafe,
@@ -70,6 +71,7 @@ export type {
   OutboundEnvelope,
   RecordCheck,
   RecordedEvent,
+  SendBatchOptions,
   SendInput,
   SendingDomain,
   SendOptions,

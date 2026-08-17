@@ -396,6 +396,22 @@ try {
   the level, a raised one does not hand out tokens retroactively, a bucket
   that had no limit starts full.
 
+## Batches
+
+`sendBatch(tenantId, inputs, { concurrency?, defer? })` runs independent
+sends with at most `config.batchConcurrency` (default 8, or the call's
+`concurrency`) in flight at once and returns one result per input, in input
+order — `{ ok: true, message }` or `{ ok: false, error: MailError }` — so
+one bad address does not stop the other forty-nine. The limiter is
+`mapLimit` (exported; twenty lines, no dependency). Anything that is not a
+`MailError` (a broken executor) rejects the whole call.
+
+SES v2 `SendBulkEmail` is not used: its `BulkEmailContent` accepts only a
+`Template`, never raw MIME, so it cannot carry the DKIM-signed bytes mail-kit
+builds and hands every transport unchanged. The SES transport keeps one
+`SendEmail` (`Content.Raw`) per message and gets its parallelism from the
+batch limiter; SES's account send rate is per message either way.
+
 ## The worker
 
 `send` delivers inline by default. Scheduled sends, retries, webhook

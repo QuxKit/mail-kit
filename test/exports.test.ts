@@ -36,6 +36,7 @@ describe('mail-kit/exports', () => {
       'clampLimit',
       'createUnsubscribe',
       'createQuotas',
+      'mapLimit',
       'MailError',
     ]) {
       assert.equal(typeof (root as Record<string, unknown>)[name], 'function', name);
@@ -45,6 +46,7 @@ describe('mail-kit/exports', () => {
     assert.ok(Array.isArray(root.ALL_WEBHOOK_EVENTS));
     assert.ok(Array.isArray(root.WEBHOOK_RETRY_SCHEDULE_S));
     assert.ok(Array.isArray(root.SEND_RETRY_SCHEDULE_S));
+    assert.equal(root.DEFAULT_BATCH_CONCURRENCY, 8);
   });
 
   it('transport and adapter entries export their factories', () => {
