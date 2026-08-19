@@ -31,7 +31,7 @@ jobs:
       MAIL_KIT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/mail_kit_test
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
           node-version: 22
