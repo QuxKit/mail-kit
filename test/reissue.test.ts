@@ -79,6 +79,36 @@ describe('reissueRecords', { skip: h === null ? 'no database' : false }, () => {
     assert.ok(again.verifiedAt);
   });
 
+  it('re-issues without the DKIM key, since it is only needed to mint one', async () => {
+    // The publishing tool holds the database and does not sign. Requiring the
+    // sealing key to re-derive a checklist around a key already on file locked
+    // that caller out for no reason.
+    const noKey = createMail({
+      db,
+      transport: memoryTransport({ spfInclude: 'later.example' }),
+      dns,
+      fetch: new FakeFetch().fetch,
+      clock,
+      config: { dmarcReportAddress: 'dmarc@ops.test' },
+    });
+    const domain = await noKey.domains.find(T1, 'migrate.test');
+    const again = await noKey.domains.reissueRecords(T1, domain!.id);
+    assert.equal(again.records.find((r) => r.purpose === 'spf')?.value, 'v=spf1 include:later.example ~all');
+    assert.equal(again.dkimSelector, domain!.dkimSelector, 'the existing key is untouched');
+  });
+
+  it('still refuses to ADD a locally signed domain with no key', async () => {
+    const noKey = createMail({
+      db,
+      transport: memoryTransport({ spfInclude: 'x.example' }),
+      dns,
+      fetch: new FakeFetch().fetch,
+      clock,
+      config: {},
+    });
+    await assert.rejects(noKey.domains.add(T1, { name: 'nokey.test' }));
+  });
+
   it('refuses a domain that is not this tenant’s', async () => {
     const m = build('_spf.mx.cloudflare.net');
     const domain = await m.domains.find(T1, 'migrate.test');
