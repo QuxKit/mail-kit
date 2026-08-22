@@ -7,3 +7,8 @@ dist/
 coverage/
 examples/*/pnpm-lock.yaml
 examples/*/package-lock.json
+
+# Packed tarballs. `pnpm pack` writes one into the repo root and consumers
+# vendor it from there, so it is an artifact passing through the working tree —
+# never a file to commit. One reached main through a `git add -A`.
+*.tgz
