@@ -1,8 +1,8 @@
 {
   "name": "@quxkit/mail-kit",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packageManager": "pnpm@11.20.0",
-  "description": "Transactional email as a library \u2014 sending domains, idempotent sends, delivery events, suppression and signed webhooks, over a transport you choose.",
+  "description": "Transactional email as a library — sending domains, idempotent sends, delivery events, suppression and signed webhooks, over a transport you choose.",
   "license": "Apache-2.0",
   "author": "QuxKit.AI (https://quxkit.ai)",
   "type": "module",
@@ -11,7 +11,7 @@
     "type": "git",
     "url": "git+https://github.com/QuxKit/mail-kit.git"
   },
-  "homepage": "https://github.com/QuxKit/mail-kit#readme",
+  "homepage": "https://quxkit.ai",
   "bugs": {
     "url": "https://github.com/QuxKit/mail-kit/issues"
   },
