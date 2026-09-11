@@ -4,7 +4,7 @@
   "packageManager": "pnpm@11.20.0",
   "description": "Transactional email as a library \u2014 sending domains, idempotent sends, delivery events, suppression and signed webhooks, over a transport you choose.",
   "license": "Apache-2.0",
-  "author": "BRETT",
+  "author": "QuxKit.AI (https://quxkit.ai)",
   "type": "module",
   "sideEffects": false,
   "repository": {
